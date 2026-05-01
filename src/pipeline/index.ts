@@ -1,8 +1,5 @@
 /**
  * Pipeline diagram builder (Fase 1 — MVP).
- *
- * Implementation status: scaffolding only. Layout + rendering land in the
- * Sugiyama implementation milestone — see SPEC.md §2 and §7 (Fase 1).
  */
 
 import type {
@@ -13,6 +10,8 @@ import type {
   RenderOutput,
 } from '../types.js';
 import { DiagramBuildError } from '../types.js';
+import { type LayoutOptions, layoutPipeline } from './layout.js';
+import { renderPipelineSvg } from './render.js';
 
 export interface StageConfig {
   label?: string;
@@ -92,25 +91,50 @@ function createBuilder(state: PipelineState): PipelineBuilder {
       if (issues.length > 0) {
         throw new DiagramBuildError(issues);
       }
-      return {
-        kind: 'pipeline',
-        stages: state.stages.map((s) =>
-          s.subtype !== undefined
-            ? { id: s.id, label: s.label, subtype: s.subtype }
-            : { id: s.id, label: s.label },
-        ),
-        edges: state.edges.map((e) => ({ from: e.from, to: e.to })),
-      };
+      return stateToIr(state);
     },
 
-    render(_options?: RenderOptions): RenderOutput {
-      throw new Error(
-        'pipeline.render() is not implemented yet. ' +
-          'Layout + SVG generation lands in the Sugiyama milestone (see SPEC.md §2, §7 Fase 1).',
-      );
+    render(options?: RenderOptions): RenderOutput {
+      const issues = validate(state);
+      if (issues.length > 0) {
+        throw new DiagramBuildError(issues);
+      }
+      const ir = stateToIr(state);
+      const layoutOpts: LayoutOptions = {};
+      if (options?.padding !== undefined) layoutOpts.padding = options.padding;
+
+      const layout = layoutPipeline(ir, layoutOpts);
+      const result = renderPipelineSvg(layout, {}, options?.accessible ?? true);
+
+      return {
+        svg: result.svg,
+        viewBox: {
+          x: layout.bounds.minX,
+          y: layout.bounds.minY,
+          width: result.width,
+          height: result.height,
+        },
+        layoutMetrics: {
+          nodeCount: layout.stages.length,
+          edgeCount: layout.edges.length,
+          bounds: layout.bounds,
+        },
+      };
     },
   };
   return builder;
+}
+
+function stateToIr(state: PipelineState): PipelineDiagram {
+  return {
+    kind: 'pipeline',
+    stages: state.stages.map((s) =>
+      s.subtype !== undefined
+        ? { id: s.id, label: s.label, subtype: s.subtype }
+        : { id: s.id, label: s.label },
+    ),
+    edges: state.edges.map((e) => ({ from: e.from, to: e.to })),
+  };
 }
 
 function validate(state: PipelineState): DiagramBuildIssue[] {

@@ -39,7 +39,18 @@ describe('@achronyme/diagrams scaffolding', () => {
     expect(() => cyclic.edge('b', 'a').build()).toThrow(DiagramBuildError);
   });
 
-  it('render() throws until the Sugiyama milestone lands', () => {
-    expect(() => pipeline().stage('a').render()).toThrow(/not implemented yet/);
+  it('render() returns SVG + viewBox + layout metrics', () => {
+    const out = pipeline()
+      .stage('a', { label: 'A' })
+      .stage('b', { label: 'B' })
+      .edge('a', 'b')
+      .render();
+
+    expect(out.svg).toMatch(/^<svg /);
+    expect(out.svg).toContain('</svg>');
+    expect(out.viewBox.width).toBeGreaterThan(0);
+    expect(out.viewBox.height).toBeGreaterThan(0);
+    expect(out.layoutMetrics.nodeCount).toBe(2);
+    expect(out.layoutMetrics.edgeCount).toBe(1);
   });
 });
