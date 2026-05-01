@@ -86,7 +86,8 @@ export function layoutFlowchart(
   const reversed = detectBackEdges(ir);
 
   const layers = assignLayers(ir, reversed);
-  const layersByIndex = groupByLayer(ir, layers);
+  const layersByIndexRaw = groupByLayer(ir, layers);
+  const layersByIndex = reduceCrossings(layersByIndexRaw, layers, ir.edges, reversed);
 
   const nodeMeta = new Map(ir.nodes.map((n) => [n.id, n]));
 
@@ -328,6 +329,98 @@ function assignLayers(ir: FlowchartDiagram, reversed: Set<number>): Map<string, 
     layer.set(u, maxPred + 1);
   }
   return layer;
+}
+
+/**
+ * Sugiyama phase 3 — crossing reduction via barycenter heuristic.
+ *
+ * For each adjacent layer pair (L, L+1) we compute, for every node in L+1,
+ * the average position of its predecessors in L; sorting L+1 by that
+ * barycenter empirically minimises edge crossings. We sweep down then up
+ * for a few iterations (4 by default — well past the point of diminishing
+ * returns for typical 1-2 dozen-layer graphs).
+ *
+ * Only direct (1-layer-span) edges contribute to the barycenter calculation;
+ * back-edges and long edges are routed via side-loops and don't influence
+ * within-layer ordering.
+ */
+function reduceCrossings(
+  byLayer: Map<number, string[]>,
+  layers: Map<string, number>,
+  edges: ReadonlyArray<{ from: string; to: string }>,
+  reversed: Set<number>,
+  iterations = 4,
+): Map<number, string[]> {
+  const sortedKeys = [...byLayer.keys()].sort((a, b) => a - b);
+
+  const upNeighbors = new Map<string, string[]>();
+  const downNeighbors = new Map<string, string[]>();
+  for (const ids of byLayer.values()) {
+    for (const id of ids) {
+      upNeighbors.set(id, []);
+      downNeighbors.set(id, []);
+    }
+  }
+  edges.forEach((e, idx) => {
+    const fromLayer = layers.get(e.from) ?? 0;
+    const toLayer = layers.get(e.to) ?? 0;
+    const span = Math.abs(toLayer - fromLayer);
+    if (span !== 1) return;
+    const isReversed = reversed.has(idx);
+    const realFrom = isReversed ? e.to : e.from;
+    const realTo = isReversed ? e.from : e.to;
+    downNeighbors.get(realFrom)?.push(realTo);
+    upNeighbors.get(realTo)?.push(realFrom);
+  });
+
+  const ordered = new Map<number, string[]>();
+  for (const k of sortedKeys) ordered.set(k, [...(byLayer.get(k) ?? [])]);
+
+  const sortLayer = (
+    ids: string[],
+    refLayerIds: string[],
+    sideLookup: Map<string, string[]>,
+  ): void => {
+    const refPos = new Map<string, number>();
+    refLayerIds.forEach((id, i) => refPos.set(id, i));
+    const baryMap = new Map<string, number>();
+    ids.forEach((id, i) => {
+      const refs = sideLookup.get(id) ?? [];
+      let sum = 0;
+      let count = 0;
+      for (const r of refs) {
+        const p = refPos.get(r);
+        if (p !== undefined) {
+          sum += p;
+          count++;
+        }
+      }
+      baryMap.set(id, count > 0 ? sum / count : i);
+    });
+    ids.sort((a, b) => (baryMap.get(a) ?? 0) - (baryMap.get(b) ?? 0));
+  };
+
+  for (let iter = 0; iter < iterations; iter++) {
+    // Down sweep: order each layer by predecessor barycenter
+    for (let i = 1; i < sortedKeys.length; i++) {
+      const cur = sortedKeys[i];
+      const prev = sortedKeys[i - 1];
+      if (cur === undefined || prev === undefined) continue;
+      const ids = ordered.get(cur);
+      const refs = ordered.get(prev);
+      if (ids && refs) sortLayer(ids, refs, upNeighbors);
+    }
+    // Up sweep: order each layer by successor barycenter
+    for (let i = sortedKeys.length - 2; i >= 0; i--) {
+      const cur = sortedKeys[i];
+      const next = sortedKeys[i + 1];
+      if (cur === undefined || next === undefined) continue;
+      const ids = ordered.get(cur);
+      const refs = ordered.get(next);
+      if (ids && refs) sortLayer(ids, refs, downNeighbors);
+    }
+  }
+  return ordered;
 }
 
 function groupByLayer(ir: FlowchartDiagram, layers: Map<string, number>): Map<number, string[]> {
