@@ -65,6 +65,7 @@ export interface RenderOptions {
   height?: number;
   padding?: number;
   accessible?: boolean;
+  direction?: 'TB' | 'LR';
 }
 
 export interface RenderOutput {

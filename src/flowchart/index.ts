@@ -100,6 +100,7 @@ function createBuilder(state: FlowchartState): FlowchartBuilder {
       const ir = stateToIr(state);
       const layoutOpts: FlowLayoutOptions = {};
       if (options?.padding !== undefined) layoutOpts.padding = options.padding;
+      if (options?.direction !== undefined) layoutOpts.direction = options.direction;
 
       const layout = layoutFlowchart(ir, layoutOpts);
       const result = renderFlowchartSvg(layout, {}, options?.accessible ?? true);
