@@ -42,6 +42,7 @@ export interface FlowNode {
   readonly id: string;
   readonly label: string;
   readonly shape: FlowShape;
+  readonly subtitle?: string;
 }
 
 export interface FlowEdge {

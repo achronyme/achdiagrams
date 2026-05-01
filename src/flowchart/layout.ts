@@ -31,6 +31,7 @@ export interface PositionedFlowNode {
   y: number;
   width: number;
   height: number;
+  subtitle?: string;
 }
 
 export type EdgeRouting = 'direct' | 'side-loop';
@@ -90,10 +91,14 @@ export function layoutFlowchart(
   const nodeMeta = new Map(ir.nodes.map((n) => [n.id, n]));
 
   const widths = new Map<string, number>();
+  const heights = new Map<string, number>();
   for (const n of ir.nodes) {
-    const labelWidth = Math.ceil(n.label.length * charWidth) + DEFAULTS.textPaddingX;
+    const labelChars = Math.max(n.label.length, n.subtitle?.length ?? 0);
+    const labelWidth = Math.ceil(labelChars * charWidth) + DEFAULTS.textPaddingX;
     const factor = widthFactorFor(n.shape);
     widths.set(n.id, Math.max(minNodeWidth, Math.round(labelWidth * factor)));
+    // Subtitle adds a second line of text — bump the height to keep padding.
+    heights.set(n.id, n.subtitle !== undefined ? nodeHeight + 18 : nodeHeight);
   }
 
   const positioned = new Map<string, PositionedFlowNode>();
@@ -110,27 +115,31 @@ export function layoutFlowchart(
     let cursorY = padding;
     for (const [, ids] of sortedLayerEntries) {
       const layerWidth = layerWidthFor(ids);
+      const layerHeight = Math.max(...ids.map((id) => heights.get(id) ?? nodeHeight));
       let cursorX = globalCenterX - layerWidth / 2;
       for (const id of ids) {
         const n = nodeMeta.get(id);
         if (!n) continue;
         const w = widths.get(id) ?? minNodeWidth;
+        const h = heights.get(id) ?? nodeHeight;
         positioned.set(id, {
           id,
           label: n.label,
           shape: n.shape,
           x: cursorX,
-          y: cursorY,
+          y: cursorY + (layerHeight - h) / 2,
           width: w,
-          height: nodeHeight,
+          height: h,
+          ...(n.subtitle !== undefined ? { subtitle: n.subtitle } : {}),
         });
         cursorX += w + withinLayerSpacing;
       }
-      cursorY += nodeHeight + layerSpacing;
+      cursorY += layerHeight + layerSpacing;
     }
   } else {
     const layerHeightFor = (ids: string[]): number =>
-      ids.length * nodeHeight + (ids.length - 1) * withinLayerSpacing;
+      ids.reduce((a, id) => a + (heights.get(id) ?? nodeHeight), 0) +
+      (ids.length - 1) * withinLayerSpacing;
     const maxLayerHeight = Math.max(...sortedLayerEntries.map(([, ids]) => layerHeightFor(ids)));
     const globalCenterY = padding + maxLayerHeight / 2;
 
@@ -143,6 +152,7 @@ export function layoutFlowchart(
         const n = nodeMeta.get(id);
         if (!n) continue;
         const w = widths.get(id) ?? minNodeWidth;
+        const h = heights.get(id) ?? nodeHeight;
         positioned.set(id, {
           id,
           label: n.label,
@@ -150,9 +160,10 @@ export function layoutFlowchart(
           x: cursorX + (maxW - w) / 2,
           y: cursorY,
           width: w,
-          height: nodeHeight,
+          height: h,
+          ...(n.subtitle !== undefined ? { subtitle: n.subtitle } : {}),
         });
-        cursorY += nodeHeight + withinLayerSpacing;
+        cursorY += h + withinLayerSpacing;
       }
       cursorX += maxW + layerSpacing;
     }

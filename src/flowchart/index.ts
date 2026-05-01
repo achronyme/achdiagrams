@@ -24,6 +24,7 @@ import { renderFlowchartSvg } from './render.js';
 export interface FlowNodeConfig {
   label?: string;
   shape?: FlowShape;
+  subtitle?: string;
 }
 
 export interface FlowEdgeConfig {
@@ -47,7 +48,7 @@ export interface FlowchartBuilder<Nodes extends string = never, Built extends bo
 }
 
 interface FlowchartState {
-  nodes: Array<{ id: string; label: string; shape: FlowShape }>;
+  nodes: Array<{ id: string; label: string; shape: FlowShape; subtitle?: string }>;
   edges: Array<{ from: string; to: string; label?: string }>;
 }
 
@@ -66,6 +67,7 @@ function createBuilder(state: FlowchartState): FlowchartBuilder {
             id,
             label: config?.label ?? id,
             shape: config?.shape ?? 'process',
+            ...(config?.subtitle !== undefined ? { subtitle: config.subtitle } : {}),
           },
         ],
         edges: state.edges,
@@ -122,11 +124,11 @@ function createBuilder(state: FlowchartState): FlowchartBuilder {
 }
 
 function stateToIr(state: FlowchartState): FlowchartDiagram {
-  const nodes: FlowNode[] = state.nodes.map((n) => ({
-    id: n.id,
-    label: n.label,
-    shape: n.shape,
-  }));
+  const nodes: FlowNode[] = state.nodes.map((n) =>
+    n.subtitle !== undefined
+      ? { id: n.id, label: n.label, shape: n.shape, subtitle: n.subtitle }
+      : { id: n.id, label: n.label, shape: n.shape },
+  );
   const edges: FlowEdge[] = state.edges.map((e) =>
     e.label !== undefined ? { from: e.from, to: e.to, label: e.label } : { from: e.from, to: e.to },
   );

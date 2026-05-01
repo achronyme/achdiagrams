@@ -36,6 +36,10 @@ const EMBEDDED_STYLE = `
     fill: var(--ach-diag-stage-text, #ededef);
     font-feature-settings: "ss01" on, "cv11" on;
   }
+  .ach-diag-node text.ach-diag-subtitle {
+    fill: var(--ach-diag-stage-subtitle, #8a8a93);
+    font-weight: 400;
+  }
   .ach-diag-edge { stroke: var(--ach-diag-edge, #5a5a63); fill: none; }
   .ach-diag-arrow path { fill: var(--ach-diag-edge, #5a5a63); }
   .ach-diag-edge-label-bg {
@@ -65,6 +69,7 @@ const EMBEDDED_STYLE = `
     }
     .ach-diag-node > line { stroke: var(--ach-diag-stage-border, #d4d4d8); }
     .ach-diag-node text { fill: var(--ach-diag-stage-text, #18181b); }
+    .ach-diag-node text.ach-diag-subtitle { fill: var(--ach-diag-stage-subtitle, #71717a); }
     .ach-diag-edge { stroke: var(--ach-diag-edge, #a1a1aa); }
     .ach-diag-arrow path { fill: var(--ach-diag-edge, #a1a1aa); }
     .ach-diag-edge-label-bg { fill: var(--ach-diag-edge-label-bg, #ffffff); }
@@ -136,7 +141,18 @@ function renderNode(n: PositionedFlowNode, cfg: NodeRenderConfig): string {
   const shapeFragment = renderShape(n.shape, n, cfg.cornerRadius)
     .replace('<rect', `<rect stroke-width="${cfg.strokeWidth}"`)
     .replace('<polygon', `<polygon stroke-width="${cfg.strokeWidth}"`);
-  return `<g class="ach-diag-node" data-shape="${n.shape}">${shapeFragment}<text x="${cx}" y="${cy}" font-family="${escapeXml(cfg.fontFamily)}" font-size="${cfg.fontSize}" text-anchor="middle" dominant-baseline="central">${escapeXml(n.label)}</text></g>`;
+
+  let textBlock: string;
+  if (n.subtitle !== undefined && n.subtitle.length > 0) {
+    const labelOffset = -8;
+    const subtitleOffset = 10;
+    textBlock =
+      `<text x="${cx}" y="${cy + labelOffset}" font-family="${escapeXml(cfg.fontFamily)}" font-size="${cfg.fontSize}" text-anchor="middle" dominant-baseline="central">${escapeXml(n.label)}</text>` +
+      `<text class="ach-diag-subtitle" x="${cx}" y="${cy + subtitleOffset}" font-family="${escapeXml(cfg.fontFamily)}" font-size="${cfg.fontSize - 3}" text-anchor="middle" dominant-baseline="central">${escapeXml(n.subtitle)}</text>`;
+  } else {
+    textBlock = `<text x="${cx}" y="${cy}" font-family="${escapeXml(cfg.fontFamily)}" font-size="${cfg.fontSize}" text-anchor="middle" dominant-baseline="central">${escapeXml(n.label)}</text>`;
+  }
+  return `<g class="ach-diag-node" data-shape="${n.shape}">${shapeFragment}${textBlock}</g>`;
 }
 
 function renderEdge(
