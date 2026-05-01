@@ -1,5 +1,5 @@
 /**
- * @achronyme/diagrams — programmatic SVG diagram engine.
+ * @achronyme/achdiagrams — programmatic SVG diagram engine.
  *
  * Public entry point. See SPEC.md §1 (API Surface) and §7 (Roadmap).
  *

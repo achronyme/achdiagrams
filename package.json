@@ -1,14 +1,14 @@
 {
-  "name": "@achronyme/diagrams",
+  "name": "@achronyme/achdiagrams",
   "version": "0.0.0",
   "description": "Programmatic SVG diagram engine with chainable type-safe API. Replaces Mermaid in @achronyme docs and powers the inspector DAG.",
   "type": "module",
   "license": "Apache-2.0",
   "author": "Achronyme",
-  "homepage": "https://achrony.me",
+  "homepage": "https://github.com/achronyme/achdiagrams",
   "repository": {
     "type": "git",
-    "url": "https://github.com/achronyme/diagrams.git"
+    "url": "https://github.com/achronyme/achdiagrams.git"
   },
   "engines": {
     "node": ">=20"

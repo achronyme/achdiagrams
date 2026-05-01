@@ -1,5 +1,5 @@
 /**
- * Core type definitions for @achronyme/diagrams.
+ * Core type definitions for @achronyme/achdiagrams.
  * See SPEC.md §1 (API Surface) and §3 (Diagram Semantics).
  */
 
