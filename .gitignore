@@ -1,0 +1,60 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+.pnp.cjs
+
+# Build outputs
+dist/
+build/
+out/
+lib/
+*.tsbuildinfo
+
+# Test / coverage
+coverage/
+.nyc_output/
+.vitest-cache/
+playwright-report/
+test-results/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# npm pack output
+*.tgz
+
+# Caches
+.cache/
+.turbo/
+.parcel-cache/
+.vite/
+.eslintcache
+
+# Future Rust / WASM toolchain
+target/
+pkg/
+wasm-pack.log
+
+# Local-only visual demo (not part of the published package)
+demo/

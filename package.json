@@ -1,0 +1,65 @@
+{
+  "name": "@achronyme/diagrams",
+  "version": "0.0.0",
+  "description": "Programmatic SVG diagram engine with chainable type-safe API. Replaces Mermaid in @achronyme docs and powers the inspector DAG.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "Achronyme",
+  "homepage": "https://achrony.me",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/achronyme/diagrams.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./pipeline": {
+      "types": "./dist/pipeline/index.d.ts",
+      "import": "./dist/pipeline/index.js",
+      "require": "./dist/pipeline/index.cjs"
+    }
+  },
+  "files": ["dist", "LICENSE", "README.md"],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome lint .",
+    "format": "biome format --write .",
+    "check": "biome check --write . && pnpm typecheck",
+    "prepublishOnly": "pnpm build"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@vitest/coverage-v8": "^2.1.8",
+    "fast-check": "^3.23.2",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "keywords": [
+    "diagrams",
+    "svg",
+    "graph",
+    "layout",
+    "sugiyama",
+    "flowchart",
+    "sequence",
+    "state",
+    "dag",
+    "achronyme"
+  ]
+}
