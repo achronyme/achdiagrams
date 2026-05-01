@@ -45,6 +45,7 @@
     "lint": "biome lint .",
     "format": "biome format --write .",
     "check": "biome check --write . && pnpm typecheck",
+    "prepare": "tsup",
     "prepublishOnly": "pnpm build"
   },
   "devDependencies": {
