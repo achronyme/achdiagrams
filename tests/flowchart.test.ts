@@ -84,4 +84,63 @@ describe('flowchart builder + render', () => {
     expect(out.svg).toContain('prefers-color-scheme: light');
     expect(out.svg).toContain('--ach-diag-decision-bg');
   });
+
+  it('aligns single-node-per-layer chains on a common X axis', () => {
+    // Mixing a narrow terminator, a wide decision, and a medium data should
+    // still center every node on the same vertical axis when each layer
+    // contains a single node.
+    const out = flowchart()
+      .node('a', { label: 'A', shape: 'terminator' })
+      .node('b', { label: 'Schema OK?', shape: 'decision' })
+      .node('c', { label: 'Read CSV', shape: 'data' })
+      .node('d', { label: 'D' })
+      .edge('a', 'b')
+      .edge('b', 'c')
+      .edge('c', 'd')
+      .render();
+
+    const rectMatches = [
+      ...out.svg.matchAll(/<g class="ach-diag-node"[^>]*>(<rect|<polygon)([^/]*?)\/>/g),
+    ];
+    expect(rectMatches.length).toBeGreaterThanOrEqual(2);
+
+    // Extract node centers from the rect/polygon attributes. For rects we read
+    // x and width; for polygons we average vertex x-coordinates.
+    const centers: number[] = [];
+    const rectRe = /<rect([^>]*?)\/>/g;
+    for (const m of out.svg.matchAll(rectRe)) {
+      const attrs = m[1] ?? '';
+      if (!/width="/.test(attrs)) continue;
+      const xMatch = attrs.match(/\sx="([\d.-]+)"/);
+      const wMatch = attrs.match(/\swidth="([\d.-]+)"/);
+      if (xMatch?.[1] && wMatch?.[1]) {
+        const x = Number.parseFloat(xMatch[1]);
+        const w = Number.parseFloat(wMatch[1]);
+        // Skip the background rect (always positioned at bounds.minX).
+        if (Math.abs(x - out.viewBox.x) < 0.5) continue;
+        centers.push(x + w / 2);
+      }
+    }
+    const polyRe = /<polygon([^>]*?)\/>/g;
+    for (const m of out.svg.matchAll(polyRe)) {
+      const attrs = m[1] ?? '';
+      const ptsMatch = attrs.match(/points="([^"]+)"/);
+      if (!ptsMatch?.[1]) continue;
+      const xs = ptsMatch[1]
+        .trim()
+        .split(/\s+/)
+        .map((p) => Number.parseFloat(p.split(',')[0] ?? '0'));
+      if (xs.length === 0) continue;
+      const minX = Math.min(...xs);
+      const maxX = Math.max(...xs);
+      centers.push((minX + maxX) / 2);
+    }
+
+    expect(centers.length).toBeGreaterThanOrEqual(2);
+    const first = centers[0];
+    if (first === undefined) throw new Error('no centers');
+    for (const c of centers) {
+      expect(Math.abs(c - first)).toBeLessThanOrEqual(1);
+    }
+  });
 });

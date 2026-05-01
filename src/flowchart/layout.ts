@@ -33,11 +33,13 @@ export interface PositionedFlowNode {
   height: number;
 }
 
+export type EdgeRouting = 'direct' | 'side-loop';
+
 export interface PositionedFlowEdge {
   from: string;
   to: string;
   label?: string;
-  reversed: boolean;
+  routing: EdgeRouting;
   fromPoint: { x: number; y: number };
   toPoint: { x: number; y: number };
   fromAnchor: 'top' | 'right' | 'bottom' | 'left';
@@ -89,19 +91,24 @@ export function layoutFlowchart(
   }
 
   const positioned = new Map<string, PositionedFlowNode>();
+  const sortedLayerEntries = sortedLayers(layersByIndex);
 
   if (direction === 'TB') {
+    const layerWidthFor = (ids: string[]): number =>
+      ids.reduce((a, id) => a + (widths.get(id) ?? minNodeWidth), 0) +
+      (ids.length - 1) * withinLayerSpacing;
+
+    const maxLayerWidth = Math.max(...sortedLayerEntries.map(([, ids]) => layerWidthFor(ids)));
+    const globalCenterX = padding + maxLayerWidth / 2;
+
     let cursorY = padding;
-    for (const [, ids] of sortedLayers(layersByIndex)) {
-      const layerWidths = ids.map((id) => widths.get(id) ?? minNodeWidth);
-      const totalWidth =
-        layerWidths.reduce((a, b) => a + b, 0) + (ids.length - 1) * withinLayerSpacing;
-      let cursorX = padding;
-      void totalWidth;
-      ids.forEach((id, i) => {
+    for (const [, ids] of sortedLayerEntries) {
+      const layerWidth = layerWidthFor(ids);
+      let cursorX = globalCenterX - layerWidth / 2;
+      for (const id of ids) {
         const n = nodeMeta.get(id);
-        if (!n) return;
-        const w = layerWidths[i] ?? minNodeWidth;
+        if (!n) continue;
+        const w = widths.get(id) ?? minNodeWidth;
         positioned.set(id, {
           id,
           label: n.label,
@@ -112,27 +119,35 @@ export function layoutFlowchart(
           height: nodeHeight,
         });
         cursorX += w + withinLayerSpacing;
-      });
+      }
       cursorY += nodeHeight + layerSpacing;
     }
   } else {
+    const layerHeightFor = (ids: string[]): number =>
+      ids.length * nodeHeight + (ids.length - 1) * withinLayerSpacing;
+    const maxLayerHeight = Math.max(...sortedLayerEntries.map(([, ids]) => layerHeightFor(ids)));
+    const globalCenterY = padding + maxLayerHeight / 2;
+
     let cursorX = padding;
-    for (const [, ids] of sortedLayers(layersByIndex)) {
+    for (const [, ids] of sortedLayerEntries) {
+      const layerHeight = layerHeightFor(ids);
       const maxW = Math.max(...ids.map((id) => widths.get(id) ?? minNodeWidth));
-      ids.forEach((id, i) => {
+      let cursorY = globalCenterY - layerHeight / 2;
+      for (const id of ids) {
         const n = nodeMeta.get(id);
-        if (!n) return;
+        if (!n) continue;
         const w = widths.get(id) ?? minNodeWidth;
         positioned.set(id, {
           id,
           label: n.label,
           shape: n.shape,
           x: cursorX + (maxW - w) / 2,
-          y: padding + i * (nodeHeight + withinLayerSpacing),
+          y: cursorY,
           width: w,
           height: nodeHeight,
         });
-      });
+        cursorY += nodeHeight + withinLayerSpacing;
+      }
       cursorX += maxW + layerSpacing;
     }
   }
@@ -144,14 +159,16 @@ export function layoutFlowchart(
     if (!f || !t) {
       throw new Error(`Internal: edge references unknown node ${e.from} -> ${e.to}`);
     }
-    const { fromAnchor, toAnchor } = resolveAnchors(f, t, direction, wasReversed);
+    const span = Math.abs((layers.get(e.to) ?? 0) - (layers.get(e.from) ?? 0));
+    const routing: EdgeRouting = wasReversed || span > 1 ? 'side-loop' : 'direct';
+    const { fromAnchor, toAnchor } = resolveAnchors(f, t, direction, routing);
     const fromPoint = anchorPoint(f, fromAnchor);
     const toPoint = anchorPoint(t, toAnchor);
     return {
       from: e.from,
       to: e.to,
       ...(e.label !== undefined ? { label: e.label } : {}),
-      reversed: wasReversed,
+      routing,
       fromPoint,
       toPoint,
       fromAnchor,
@@ -259,37 +276,26 @@ function resolveAnchors(
   from: PositionedFlowNode,
   to: PositionedFlowNode,
   direction: 'TB' | 'LR',
-  reversed: boolean,
+  routing: EdgeRouting,
 ): {
   fromAnchor: 'top' | 'right' | 'bottom' | 'left';
   toAnchor: 'top' | 'right' | 'bottom' | 'left';
 } {
+  if (routing === 'side-loop') {
+    if (direction === 'TB') {
+      return { fromAnchor: 'right', toAnchor: 'right' };
+    }
+    return { fromAnchor: 'bottom', toAnchor: 'bottom' };
+  }
   if (direction === 'TB') {
-    if (reversed) {
-      return from.x === to.x
-        ? { fromAnchor: 'top', toAnchor: 'bottom' }
-        : { fromAnchor: 'left', toAnchor: 'right' };
-    }
-    if (from.y === to.y) {
-      return from.x < to.x
-        ? { fromAnchor: 'right', toAnchor: 'left' }
-        : { fromAnchor: 'left', toAnchor: 'right' };
-    }
     return from.y < to.y
       ? { fromAnchor: 'bottom', toAnchor: 'top' }
       : { fromAnchor: 'top', toAnchor: 'bottom' };
   }
-  if (reversed) {
-    return { fromAnchor: 'left', toAnchor: 'right' };
-  }
-  if (from.x === to.x) {
-    return from.y < to.y
-      ? { fromAnchor: 'bottom', toAnchor: 'top' }
-      : { fromAnchor: 'top', toAnchor: 'bottom' };
-  }
-  return from.x < to.x
-    ? { fromAnchor: 'right', toAnchor: 'left' }
-    : { fromAnchor: 'left', toAnchor: 'right' };
+  // LR direct
+  void from;
+  void to;
+  return { fromAnchor: 'right', toAnchor: 'left' };
 }
 
 function anchorPoint(

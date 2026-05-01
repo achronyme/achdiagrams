@@ -146,12 +146,12 @@ function renderEdge(
   fontFamily: string,
 ): string {
   const tip = insetEndpoint(e.toPoint, e.toAnchor);
-  const path = bezierPath(e.fromPoint, tip, e.fromAnchor, e.toAnchor);
+  const { path, c1, c2 } = bezierPath(e.fromPoint, tip, e.fromAnchor, e.toAnchor, e.routing);
   void direction;
 
   let labelEl = '';
   if (e.label !== undefined && e.label.length > 0) {
-    const mid = midpoint(e.fromPoint, tip);
+    const mid = bezierMid(e.fromPoint, c1, c2, tip);
     const labelWidth = Math.max(20, e.label.length * 7 + 12);
     const labelHeight = labelFontSize + 8;
     labelEl = `<rect class="ach-diag-edge-label-bg" x="${mid.x - labelWidth / 2}" y="${mid.y - labelHeight / 2}" width="${labelWidth}" height="${labelHeight}" rx="3" ry="3"/><text class="ach-diag-edge-label" x="${mid.x}" y="${mid.y}" font-family="${escapeXml(fontFamily)}" font-size="${labelFontSize}" text-anchor="middle" dominant-baseline="central">${escapeXml(e.label)}</text>`;
@@ -176,40 +176,81 @@ function insetEndpoint(
   }
 }
 
+interface BezierParts {
+  path: string;
+  c1: { x: number; y: number };
+  c2: { x: number; y: number };
+}
+
 function bezierPath(
   from: { x: number; y: number },
   to: { x: number; y: number },
   fromSide: 'top' | 'right' | 'bottom' | 'left',
   toSide: 'top' | 'right' | 'bottom' | 'left',
-): string {
+  routing: 'direct' | 'side-loop',
+): BezierParts {
+  if (routing === 'side-loop') return sideLoopPath(from, to, fromSide, toSide);
+
   const dx = to.x - from.x;
   const dy = to.y - from.y;
   const verticalFlow = fromSide === 'bottom' || fromSide === 'top';
-  const reverse = toSide === 'right' || toSide === 'left';
-
-  if (verticalFlow && !reverse) {
+  let c1: { x: number; y: number };
+  let c2: { x: number; y: number };
+  if (verticalFlow) {
     const midY = from.y + dy / 2;
-    return `M ${from.x} ${from.y} C ${from.x} ${midY}, ${to.x} ${midY}, ${to.x} ${to.y}`;
-  }
-  if (!verticalFlow && !reverse) {
+    c1 = { x: from.x, y: midY };
+    c2 = { x: to.x, y: midY };
+  } else {
     const midX = from.x + dx / 2;
-    return `M ${from.x} ${from.y} C ${midX} ${from.y}, ${midX} ${to.y}, ${to.x} ${to.y}`;
+    c1 = { x: midX, y: from.y };
+    c2 = { x: midX, y: to.y };
   }
-  const offset = Math.max(40, Math.min(Math.abs(dx), Math.abs(dy)) / 2 + 30);
-  const c1x =
-    fromSide === 'right' ? from.x + offset : fromSide === 'left' ? from.x - offset : from.x;
-  const c1y =
-    fromSide === 'bottom' ? from.y + offset : fromSide === 'top' ? from.y - offset : from.y;
-  const c2x = toSide === 'right' ? to.x + offset : toSide === 'left' ? to.x - offset : to.x;
-  const c2y = toSide === 'bottom' ? to.y + offset : toSide === 'top' ? to.y - offset : to.y;
-  return `M ${from.x} ${from.y} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${to.x} ${to.y}`;
+  const path = `M ${from.x} ${from.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${to.x} ${to.y}`;
+  return { path, c1, c2 };
 }
 
-function midpoint(
-  a: { x: number; y: number },
-  b: { x: number; y: number },
+function sideLoopPath(
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  fromSide: 'top' | 'right' | 'bottom' | 'left',
+  toSide: 'top' | 'right' | 'bottom' | 'left',
+): BezierParts {
+  // Both endpoints share the same outward side. Push control points outward
+  // by a detour proportional to the chord, so longer detours bulge wider.
+  const chord = Math.hypot(to.x - from.x, to.y - from.y);
+  const detour = Math.max(60, Math.min(160, chord * 0.4));
+  const cFor = (
+    p: { x: number; y: number },
+    side: 'top' | 'right' | 'bottom' | 'left',
+  ): { x: number; y: number } => {
+    switch (side) {
+      case 'right':
+        return { x: p.x + detour, y: p.y };
+      case 'left':
+        return { x: p.x - detour, y: p.y };
+      case 'bottom':
+        return { x: p.x, y: p.y + detour };
+      case 'top':
+        return { x: p.x, y: p.y - detour };
+    }
+  };
+  const c1 = cFor(from, fromSide);
+  const c2 = cFor(to, toSide);
+  const path = `M ${from.x} ${from.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${to.x} ${to.y}`;
+  return { path, c1, c2 };
+}
+
+function bezierMid(
+  p0: { x: number; y: number },
+  p1: { x: number; y: number },
+  p2: { x: number; y: number },
+  p3: { x: number; y: number },
 ): { x: number; y: number } {
-  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  // Cubic Bézier evaluated at t = 0.5: P(0.5) = (P0 + 3P1 + 3P2 + P3) / 8
+  return {
+    x: (p0.x + 3 * p1.x + 3 * p2.x + p3.x) / 8,
+    y: (p0.y + 3 * p1.y + 3 * p2.y + p3.y) / 8,
+  };
 }
 
 function escapeXml(s: string): string {
