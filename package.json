@@ -26,6 +26,11 @@
       "types": "./dist/pipeline/index.d.ts",
       "import": "./dist/pipeline/index.js",
       "require": "./dist/pipeline/index.cjs"
+    },
+    "./flowchart": {
+      "types": "./dist/flowchart/index.d.ts",
+      "import": "./dist/flowchart/index.js",
+      "require": "./dist/flowchart/index.cjs"
     }
   },
   "files": ["dist", "LICENSE", "README.md"],

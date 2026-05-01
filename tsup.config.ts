@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     index: 'src/index.ts',
     'pipeline/index': 'src/pipeline/index.ts',
+    'flowchart/index': 'src/flowchart/index.ts',
   },
   format: ['esm', 'cjs'],
   dts: true,

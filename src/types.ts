@@ -36,7 +36,27 @@ export interface PipelineDiagram {
   }>;
 }
 
-export type DiagramIR = PipelineDiagram;
+export type FlowShape = 'process' | 'decision' | 'terminator' | 'data' | 'predefined-process';
+
+export interface FlowNode {
+  readonly id: string;
+  readonly label: string;
+  readonly shape: FlowShape;
+}
+
+export interface FlowEdge {
+  readonly from: string;
+  readonly to: string;
+  readonly label?: string;
+}
+
+export interface FlowchartDiagram {
+  readonly kind: 'flowchart';
+  readonly nodes: ReadonlyArray<FlowNode>;
+  readonly edges: ReadonlyArray<FlowEdge>;
+}
+
+export type DiagramIR = PipelineDiagram | FlowchartDiagram;
 
 export interface RenderOptions {
   theme?: 'auto' | 'light' | 'dark' | Record<string, string>;
