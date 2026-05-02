@@ -95,7 +95,7 @@ export function renderPipelineSvg(
     .map((s) => renderStage(s, { fontSize, fontFamily, stageRadius, strokeWidth }))
     .join('');
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${layout.bounds.minX} ${layout.bounds.minY} ${width} ${height}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;display:block"${role}>${a11y}<defs>${arrowDef}<style>${EMBEDDED_STYLE}</style></defs><rect class="ach-diag-bg" x="${layout.bounds.minX}" y="${layout.bounds.minY}" width="${width}" height="${height}"/>${edges}${stages}</svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${layout.bounds.minX} ${layout.bounds.minY} ${width} ${height}" width="${width}" height="${height}" preserveAspectRatio="xMidYMid meet"${role}>${a11y}<defs>${arrowDef}<style>${EMBEDDED_STYLE}</style></defs><rect class="ach-diag-bg" x="${layout.bounds.minX}" y="${layout.bounds.minY}" width="${width}" height="${height}"/>${edges}${stages}</svg>`;
 
   return { svg, width, height };
 }
