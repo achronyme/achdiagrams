@@ -158,8 +158,12 @@ export function layoutFlowchart(
     return sum;
   };
 
-  // Layer mid-band for dummy positioning (TB: midY per layer; LR: midX).
-  const layerMidBand = new Map<number, number>();
+  // Layer band metadata. For TB: `start` is the top Y, `span` is the row
+  // height. For LR: `start` is the left X, `span` is the column width.
+  // Dummies span the FULL layer band so cubic segments only ever traverse
+  // the gaps between layer bands — never the bands themselves — keeping
+  // long edges clear of real-node bounding boxes (Sugiyama §4 strict).
+  const layerBands = new Map<number, { start: number; span: number }>();
 
   if (direction === 'TB') {
     const maxLayerWidth = Math.max(...sortedLayerEntries.map(([, ids]) => layerWidthOfReals(ids)));
@@ -191,7 +195,7 @@ export function layoutFlowchart(
         });
         cursorX += w + withinLayerSpacing;
       }
-      layerMidBand.set(layerIdx, cursorY + layerHeight / 2);
+      layerBands.set(layerIdx, { start: cursorY, span: layerHeight });
       cursorY += layerHeight + layerSpacing;
     }
   } else {
@@ -226,7 +230,7 @@ export function layoutFlowchart(
         });
         cursorY += h + withinLayerSpacing;
       }
-      layerMidBand.set(layerIdx, cursorX + layerWidth / 2);
+      layerBands.set(layerIdx, { start: cursorX, span: layerWidth });
       cursorX += layerWidth + layerSpacing;
     }
   }
@@ -238,7 +242,7 @@ export function layoutFlowchart(
     sortedLayerEntries,
     augmented.dummyIds,
     positioned,
-    layerMidBand,
+    layerBands,
     direction,
     withinLayerSpacing,
   );
@@ -402,21 +406,27 @@ function groupByLayerWithDummies(ir: FlowchartDiagram, d: DummyInsertion): Map<n
 /**
  * Position dummy nodes in a second pass after real nodes have been placed.
  *
- * For each layer, dummies that fall between two real nodes (or before the
+ * Dummies span the FULL layer band (height for TB, width for LR) at width 0
+ * (resp. height 0) so cubic segments connecting consecutive waypoints only
+ * traverse the GAPS between layer bands — never the bands themselves. This
+ * guarantees long edges clear every intermediate-layer real node, not just
+ * the dummy's own (zero-area) bbox.
+ *
+ * Within a layer, dummies that fall between two real nodes (or before the
  * first / after the last) in the barycenter-sorted order get evenly
- * distributed across the gap. This preserves the crossing-reduction
- * ordering while costing zero horizontal extent.
+ * distributed across the gap on the cross-axis (X for TB, Y for LR).
  */
 function positionDummies(
   sortedLayerEntries: Array<[number, string[]]>,
   dummyIds: Set<string>,
   positioned: Map<string, PositionedFlowNode>,
-  layerMidBand: Map<number, number>,
+  layerBands: Map<number, { start: number; span: number }>,
   direction: 'TB' | 'LR',
   withinLayerSpacing: number,
 ): void {
   for (const [layerIdx, ids] of sortedLayerEntries) {
-    const midBand = layerMidBand.get(layerIdx) ?? 0;
+    const band = layerBands.get(layerIdx) ?? { start: 0, span: 0 };
+    const midBand = band.start + band.span / 2;
 
     // Walk ordered ids, accumulating dummies between real anchors.
     let leftAnchor: number | null = null;
@@ -431,15 +441,12 @@ function positionDummies(
         xLeft = leftAnchor;
         xRight = rightAnchor;
       } else if (leftAnchor !== null) {
-        // Trailing dummies past the last real node.
         xLeft = leftAnchor;
         xRight = leftAnchor + withinLayerSpacing * (pendingDummies.length + 1);
       } else if (rightAnchor !== null) {
-        // Leading dummies before the first real node.
         xRight = rightAnchor;
         xLeft = rightAnchor - withinLayerSpacing * (pendingDummies.length + 1);
       } else {
-        // Layer has no real nodes — synthetic span around midBand.
         xLeft = midBand - withinLayerSpacing * pendingDummies.length;
         xRight = midBand + withinLayerSpacing * pendingDummies.length;
       }
@@ -447,18 +454,19 @@ function positionDummies(
       pendingDummies.forEach((did, i) => {
         const t = (i + 1) / slots;
         const interp = xLeft + (xRight - xLeft) * t;
-        // Dummies are first materialised here — they did not exist in the
-        // real-node placement pass. Width/height = 0 so they contribute
-        // nothing to bounds; their (x, y) is the waypoint coordinate used
-        // by buildMultiSegmentPath.
+        // TB: dummy is a zero-width vertical strip at x=interp spanning
+        // the whole layer band [start, start+span] in Y. Top anchor =
+        // (interp, start), bottom anchor = (interp, start+span).
+        // LR: zero-height horizontal strip at y=interp spanning the layer
+        // band in X.
         positioned.set(did, {
           id: did,
           label: '',
           shape: 'process' as FlowShape,
-          x: direction === 'TB' ? interp : midBand,
-          y: direction === 'TB' ? midBand : interp,
-          width: 0,
-          height: 0,
+          x: direction === 'TB' ? interp : band.start,
+          y: direction === 'TB' ? band.start : interp,
+          width: direction === 'TB' ? 0 : band.span,
+          height: direction === 'TB' ? band.span : 0,
         });
       });
       pendingDummies = [];
@@ -501,18 +509,27 @@ function buildMultiSegmentPath(
   parallelOffset = 0,
 ): CubicSegment[] {
   const verticalFlow = fromAnchor === 'bottom' || fromAnchor === 'top';
+  // Each intermediate dummy contributes TWO waypoints — entry (top/left)
+  // and exit (bottom/right) of the layer band. The cubic between them is
+  // a degenerate straight line (axis-aligned) traversing the dummy's own
+  // zero-area strip; the cubic *between* dummies traverses only the gap
+  // between two layer bands.
   const waypoints: Point[] = [fromPoint];
   for (let i = 1; i < chain.length - 1; i++) {
     const did = chain[i];
     if (did === undefined) continue;
     const dp = positioned.get(did);
     if (!dp) continue;
-    // Apply parallel offset perpendicular to flow so multiple parallel
-    // long edges fan out instead of stacking on the same waypoint.
     if (verticalFlow) {
-      waypoints.push({ x: dp.x + parallelOffset, y: dp.y });
+      // Top entry then bottom exit, both at the (offset) x-position so
+      // the within-band traversal is a straight vertical line.
+      const x = dp.x + parallelOffset;
+      waypoints.push({ x, y: dp.y });
+      waypoints.push({ x, y: dp.y + dp.height });
     } else {
-      waypoints.push({ x: dp.x, y: dp.y + parallelOffset });
+      const y = dp.y + parallelOffset;
+      waypoints.push({ x: dp.x, y });
+      waypoints.push({ x: dp.x + dp.width, y });
     }
   }
   waypoints.push(tipPoint);

@@ -1,5 +1,36 @@
 import { describe, expect, it } from 'vitest';
+import { cubicAt } from '../src/flowchart/bezier.js';
 import { DiagramBuildError, diagram, flowchart } from '../src/index.js';
+
+interface Cubic {
+  start: { x: number; y: number };
+  c1: { x: number; y: number };
+  c2: { x: number; y: number };
+  end: { x: number; y: number };
+}
+
+/**
+ * Parse an SVG path d-attribute of the form `M sx sy C c1x c1y, c2x c2y, ex ey C ...`
+ * into a list of cubic segments.
+ */
+function parseCubicPath(d: string): Cubic[] {
+  const moveMatch = d.match(/^M\s+([\d.-]+)\s+([\d.-]+)/);
+  if (!moveMatch?.[1] || !moveMatch?.[2]) return [];
+  let prev = { x: Number.parseFloat(moveMatch[1]), y: Number.parseFloat(moveMatch[2]) };
+  const segs: Cubic[] = [];
+  const re =
+    /C\s+([\d.-]+)\s+([\d.-]+),\s*([\d.-]+)\s+([\d.-]+),\s*([\d.-]+)\s+([\d.-]+)/g;
+  let m: RegExpExecArray | null;
+  // biome-ignore lint/suspicious/noAssignInExpressions: idiomatic regex iteration
+  while ((m = re.exec(d)) !== null) {
+    const c1 = { x: Number.parseFloat(m[1] ?? '0'), y: Number.parseFloat(m[2] ?? '0') };
+    const c2 = { x: Number.parseFloat(m[3] ?? '0'), y: Number.parseFloat(m[4] ?? '0') };
+    const end = { x: Number.parseFloat(m[5] ?? '0'), y: Number.parseFloat(m[6] ?? '0') };
+    segs.push({ start: prev, c1, c2, end });
+    prev = end;
+  }
+  return segs;
+}
 
 describe('flowchart builder + render', () => {
   it('exposes the flowchart factory on diagram', () => {
@@ -144,10 +175,11 @@ describe('flowchart builder + render', () => {
     }
   });
 
-  it('long forward edges emit one cubic segment per spanned layer', () => {
-    // Chain a→b→c→d (span 3 between layers) plus a direct edge a→d that
-    // bypasses b and c. The long edge spans 3 layers, so it should be
-    // rendered as a path with 3 `C` commands (one per layer).
+  it('long forward edges emit 2N-1 cubic segments for span N (Sugiyama §4)', () => {
+    // Chain a→b→c→d (span 3) plus a direct edge a→d. The long edge has
+    // 2 dummies (one per intermediate layer); each dummy contributes a
+    // band-entry and band-exit waypoint. Path has 2*3 - 1 = 5 cubic
+    // segments total.
     const out = flowchart()
       .node('a')
       .node('b')
@@ -161,16 +193,15 @@ describe('flowchart builder + render', () => {
 
     const paths = [...out.svg.matchAll(/<path class="ach-diag-edge" d="([^"]+)"/g)];
     expect(paths.length).toBe(4);
-    // Each short edge has 1 `C`; the long a→d has 3.
     const cCounts = paths.map((m) => (m[1] ?? '').match(/\bC\b/g)?.length ?? 0);
     cCounts.sort((a, b) => a - b);
-    expect(cCounts).toEqual([1, 1, 1, 3]);
+    expect(cCounts).toEqual([1, 1, 1, 5]);
   });
 
   it('long forward edge clears intermediate-layer real nodes', () => {
     // a→b→c chain plus direct a→c. The direct edge spans layer 0→2 with a
-    // real node `b` in layer 1. With dummy-node routing the long edge should
-    // be routed around `b` (its bbox should not cover the centre of `b`).
+    // real node `b` in layer 1. With dummy-node routing, the rendered cubic
+    // path of a→c must not pass through any point inside `b`'s bbox.
     const out = flowchart()
       .node('a')
       .node('b', { label: 'middle' })
@@ -180,26 +211,103 @@ describe('flowchart builder + render', () => {
       .edge('a', 'c')
       .render();
 
-    // Find the multi-`C` path (the long edge) and parse all cubics.
     const paths = [...out.svg.matchAll(/<path class="ach-diag-edge" d="([^"]+)"/g)];
-    const longD = paths.map((m) => m[1] ?? '').find((d) => (d.match(/\bC\b/g)?.length ?? 0) >= 2);
+    // Span 2 → 1 dummy → 2*2 - 1 = 3 cubic segments.
+    const longD = paths.map((m) => m[1] ?? '').find((d) => (d.match(/\bC\b/g)?.length ?? 0) >= 3);
     expect(longD).toBeTruthy();
     if (!longD) return;
-    expect((longD.match(/\bC\b/g)?.length ?? 0)).toBe(2);
+    expect(longD.match(/\bC\b/g)?.length ?? 0).toBe(3);
 
-    // Locate node b's centre by parsing its rect.
-    const rects = [...out.svg.matchAll(/<rect([^>]*?)\/>/g)];
-    const bRect = rects.find((m) => /width="/.test(m[1] ?? ''));
-    void bRect;
-    // Sanity: the layout produces something rectangular for b.
-    expect(rects.length).toBeGreaterThan(0);
-    // Hard-clearance assertion: the multi-segment path's d-attribute coords
-    // must not all coincide with b's rect — the join point at the dummy
-    // sits at b's mid-Y, but its x is the lerp midpoint (= b's centre x for
-    // a single-node-per-layer chain) which is fine; what matters is that
-    // there are TWO segments (i.e., a kink at b's layer) rather than one
-    // straight cubic that slices through b. We already asserted segs=2 above.
-    expect(true).toBe(true);
+    // Find b's rect: the only `<rect>` whose label-text matches "middle".
+    // The renderer emits each node as `<g class="ach-diag-node" data-shape="...">
+    // <rect x= y= width= height= ...>...<text>middle</text></g>`.
+    const nodeBlock = out.svg.match(
+      /<g class="ach-diag-node"[^>]*>(<rect[^/]+\/>)[^<]*(?:<[^>]+>)*[^<]*middle/,
+    );
+    expect(nodeBlock?.[1]).toBeTruthy();
+    if (!nodeBlock?.[1]) return;
+    const rectStr = nodeBlock[1];
+    const xMatch = rectStr.match(/\sx="([\d.-]+)"/);
+    const yMatch = rectStr.match(/\sy="([\d.-]+)"/);
+    const wMatch = rectStr.match(/\swidth="([\d.-]+)"/);
+    const hMatch = rectStr.match(/\sheight="([\d.-]+)"/);
+    if (!xMatch?.[1] || !yMatch?.[1] || !wMatch?.[1] || !hMatch?.[1]) {
+      throw new Error('failed to parse b rect');
+    }
+    const bx = Number.parseFloat(xMatch[1]);
+    const by = Number.parseFloat(yMatch[1]);
+    const bw = Number.parseFloat(wMatch[1]);
+    const bh = Number.parseFloat(hMatch[1]);
+
+    // Sample every cubic segment at 21 t-values; assert no sample lies
+    // strictly inside b's rect. (We only flag samples > 0.5 px inside the
+    // rect — endpoints near node anchors can be exactly on the edge.)
+    const segs = parseCubicPath(longD);
+    expect(segs.length).toBe(3);
+    const EPS = 0.5;
+    for (const s of segs) {
+      for (let k = 0; k <= 20; k++) {
+        const t = k / 20;
+        const p = cubicAt(t, s.start, s.c1, s.c2, s.end);
+        const insideX = p.x > bx + EPS && p.x < bx + bw - EPS;
+        const insideY = p.y > by + EPS && p.y < by + bh - EPS;
+        if (insideX && insideY) {
+          throw new Error(
+            `path point (${p.x.toFixed(1)}, ${p.y.toFixed(1)}) at t=${t} inside b's rect [${bx},${by},${bw},${bh}]`,
+          );
+        }
+      }
+    }
+  });
+
+  it('parallel long forward edges receive symmetric perpendicular offsets', () => {
+    // Two parallel a→d edges across 3 layers (a→b→c→d). The dummy waypoints
+    // for each parallel chain should be perpendicular-offset by ±12 px so the
+    // two paths visually fan out instead of overlapping. Endpoint anchors
+    // are shared, but the dummy bend points differ.
+    const out = flowchart()
+      .node('a')
+      .node('b')
+      .node('c')
+      .node('d')
+      .edge('a', 'b')
+      .edge('b', 'c')
+      .edge('c', 'd')
+      .edge('a', 'd', { label: 'one' })
+      .edge('a', 'd', { label: 'two' })
+      .render();
+
+    const paths = [...out.svg.matchAll(/<path class="ach-diag-edge" d="([^"]+)"/g)];
+    // Each long edge: span 3 → 2 dummies → 5 cubic segments.
+    const longPaths = paths
+      .map((m) => m[1] ?? '')
+      .filter((d) => (d.match(/\bC\b/g)?.length ?? 0) === 5);
+    expect(longPaths.length).toBe(2);
+    const [p0, p1] = longPaths.map(parseCubicPath);
+    if (!p0 || !p1) throw new Error('expected two parsed long paths');
+    expect(p0.length).toBe(5);
+    expect(p1.length).toBe(5);
+
+    // Endpoint anchors are shared between the two parallel edges.
+    expect(p0[0]?.start.x).toBe(p1[0]?.start.x);
+    expect(p0[0]?.start.y).toBe(p1[0]?.start.y);
+    expect(p0[4]?.end.x).toBe(p1[4]?.end.x);
+    expect(p0[4]?.end.y).toBe(p1[4]?.end.y);
+
+    // Dummy entry/exit waypoints differ between the two parallel chains
+    // (positionDummies distributes them across the gap, and parallel
+    // offset shifts them further apart). The chains must not overlap.
+    const firstDummyX0 = p0[1]?.start.x ?? 0;
+    const firstDummyX1 = p1[1]?.start.x ?? 0;
+    expect(firstDummyX0).not.toBe(firstDummyX1);
+    // The two chains stay parallel: the offset between them is consistent
+    // across both intermediate dummies (within float tolerance).
+    const secondDummyX0 = p0[3]?.start.x ?? 0;
+    const secondDummyX1 = p1[3]?.start.x ?? 0;
+    expect(secondDummyX0).not.toBe(secondDummyX1);
+    const delta1 = firstDummyX0 - firstDummyX1;
+    const delta2 = secondDummyX0 - secondDummyX1;
+    expect(Math.abs(delta1 - delta2)).toBeLessThan(0.01);
   });
 
   it('dummy nodes contribute zero horizontal extent (no layer-width inflation)', () => {
