@@ -171,6 +171,15 @@ export function layoutFlowchart(
     }
   }
 
+  // Pre-pass: count parallel edges (same from→to pair) so each gets a
+  // distinct perpendicular offset and they fan out instead of stacking.
+  const parallelCount = new Map<string, number>();
+  for (const e of ir.edges) {
+    const k = `${e.from}|${e.to}`;
+    parallelCount.set(k, (parallelCount.get(k) ?? 0) + 1);
+  }
+  const parallelSeen = new Map<string, number>();
+
   const edges: PositionedFlowEdge[] = ir.edges.map((e, idx) => {
     const wasReversed = reversed.has(idx);
     const f = positioned.get(e.from);
@@ -185,6 +194,15 @@ export function layoutFlowchart(
     // insertion (Sugiyama §4) — this is the cheap intermediate.
     const routing: EdgeRouting = wasReversed ? 'side-loop' : 'direct';
     const span = Math.abs((layers.get(e.to) ?? 0) - (layers.get(e.from) ?? 0));
+    const parallelKey = `${e.from}|${e.to}`;
+    const total = parallelCount.get(parallelKey) ?? 1;
+    const seen = parallelSeen.get(parallelKey) ?? 0;
+    parallelSeen.set(parallelKey, seen + 1);
+    // Symmetric offset around the chord centre. For 2 parallels: ±12 px;
+    // for 3: -24, 0, +24; etc. PARALLEL_SPACING is half of withinLayer to
+    // stay visually distinct without colliding with adjacent edges.
+    const PARALLEL_SPACING = 24;
+    const parallelOffset = total > 1 ? (seen - (total - 1) / 2) * PARALLEL_SPACING : 0;
     const { fromAnchor, toAnchor } = resolveAnchors(f, t, direction, routing);
     const fromPoint = anchorPoint(f, fromAnchor);
     const toPoint = anchorPoint(t, toAnchor);
@@ -196,6 +214,7 @@ export function layoutFlowchart(
       toAnchor,
       routing,
       routing === 'direct' && span > 1 ? span : 0,
+      parallelOffset,
     );
     return {
       from: e.from,
@@ -238,6 +257,7 @@ function computeControlPoints(
   toSide: 'top' | 'right' | 'bottom' | 'left',
   routing: EdgeRouting,
   longSpan = 0,
+  parallelOffset = 0,
 ): { c1: { x: number; y: number }; c2: { x: number; y: number } } {
   if (routing === 'side-loop') {
     return computeSideLoopControlPoints(from, to, fromSide, toSide);
@@ -250,25 +270,22 @@ function computeControlPoints(
   const bend = longSpan > 1 ? 30 * (longSpan - 1) : 0;
   if (verticalFlow) {
     const midY = from.y + (to.y - from.y) / 2;
-    if (bend === 0) {
-      return { c1: { x: from.x, y: midY }, c2: { x: to.x, y: midY } };
-    }
-    // TB: bend horizontally toward the source's side of the layout midline.
-    const direction = from.x >= to.x ? 1 : -1;
+    // TB: bend axis is horizontal (perpendicular to flow). Parallel offset
+    // also shifts horizontally so duplicate edges fan out to either side.
+    const bendDir = from.x >= to.x ? 1 : -1;
+    const dx = bend * bendDir + parallelOffset;
     return {
-      c1: { x: from.x + bend * direction, y: midY },
-      c2: { x: to.x + bend * direction, y: midY },
+      c1: { x: from.x + dx, y: midY },
+      c2: { x: to.x + dx, y: midY },
     };
   }
   const midX = from.x + (to.x - from.x) / 2;
-  if (bend === 0) {
-    return { c1: { x: midX, y: from.y }, c2: { x: midX, y: to.y } };
-  }
-  // LR: bend vertically toward the source's side of the layout midline.
-  const direction = from.y >= to.y ? 1 : -1;
+  // LR: bend axis is vertical. Parallel offset also shifts vertically.
+  const bendDir = from.y >= to.y ? 1 : -1;
+  const dy = bend * bendDir + parallelOffset;
   return {
-    c1: { x: midX, y: from.y + bend * direction },
-    c2: { x: midX, y: to.y + bend * direction },
+    c1: { x: midX, y: from.y + dy },
+    c2: { x: midX, y: to.y + dy },
   };
 }
 

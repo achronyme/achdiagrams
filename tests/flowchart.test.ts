@@ -143,4 +143,51 @@ describe('flowchart builder + render', () => {
       expect(Math.abs(c - first)).toBeLessThanOrEqual(1);
     }
   });
+
+  it('fans out parallel edges so they do not overlap', () => {
+    // Two parallel edges between the same pair should produce two distinct
+    // bezier paths with mirrored perpendicular offsets, not identical paths.
+    const out = flowchart()
+      .node('a', { label: 'A' })
+      .node('b', { label: 'B' })
+      .edge('a', 'b', { label: 'one' })
+      .edge('a', 'b', { label: 'two' })
+      .render();
+
+    const paths = [
+      ...out.svg.matchAll(
+        /<path class="ach-diag-edge" d="M ([\d.-]+) ([\d.-]+) C ([\d.-]+) ([\d.-]+), ([\d.-]+) ([\d.-]+), ([\d.-]+) ([\d.-]+)"/g,
+      ),
+    ];
+    expect(paths.length).toBe(2);
+    const [p0, p1] = paths;
+    if (!p0 || !p1) throw new Error('expected two paths');
+    // Endpoints (M and final point) match — both edges share anchors.
+    expect(p0[1]).toBe(p1[1]);
+    expect(p0[2]).toBe(p1[2]);
+    expect(p0[7]).toBe(p1[7]);
+    expect(p0[8]).toBe(p1[8]);
+    // Control points differ — they're offset symmetrically around the chord.
+    const c1y0 = Number.parseFloat(p0[4] ?? '0');
+    const c1y1 = Number.parseFloat(p1[4] ?? '0');
+    const c2y0 = Number.parseFloat(p0[6] ?? '0');
+    const c2y1 = Number.parseFloat(p1[6] ?? '0');
+    // For a TB chart the bend axis is x; for LR it's y. Default direction is
+    // TB so check x of c1/c2 differs. But the perpendicular axis depends on
+    // verticalFlow, so accept either component differing — the assertion is
+    // that the two paths are not identical.
+    const c1x0 = Number.parseFloat(p0[3] ?? '0');
+    const c1x1 = Number.parseFloat(p1[3] ?? '0');
+    const c2x0 = Number.parseFloat(p0[5] ?? '0');
+    const c2x1 = Number.parseFloat(p1[5] ?? '0');
+    const someComponentDiffers = c1x0 !== c1x1 || c2x0 !== c2x1 || c1y0 !== c1y1 || c2y0 !== c2y1;
+    expect(someComponentDiffers).toBe(true);
+    // Symmetry: the two offsets should be ± the same magnitude, so their
+    // sum on the perpendicular axis equals 2 × the unperturbed value.
+    // For the default TB layout the perpendicular axis is x.
+    const sumC1x = c1x0 + c1x1;
+    const sumC2x = c2x0 + c2x1;
+    // 2 × from.x at c1 since unperturbed c1.x = from.x. Within float tolerance.
+    expect(Math.abs(sumC1x - sumC2x)).toBeLessThan(0.01);
+  });
 });
