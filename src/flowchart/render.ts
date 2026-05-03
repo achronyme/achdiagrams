@@ -23,8 +23,6 @@ const DEFAULTS = {
   edgeStrokeWidth: 1.5,
 };
 
-const ARROW_INSET = 8;
-
 const EMBEDDED_STYLE = `
   .ach-diag-bg { fill: var(--ach-diag-bg, transparent); }
   .ach-diag-node > rect, .ach-diag-node > polygon {
@@ -162,34 +160,36 @@ function renderEdge(
   fontFamily: string,
 ): string {
   void direction;
-  const tip = insetEndpoint(e.toPoint, e.toAnchor);
-  const path = `M ${e.fromPoint.x} ${e.fromPoint.y} C ${e.c1.x} ${e.c1.y}, ${e.c2.x} ${e.c2.y}, ${tip.x} ${tip.y}`;
+  // Path = M start, then one `C c1.x c1.y, c2.x c2.y, end.x end.y` per segment.
+  // Long forward edges accumulate multiple `C` commands joined at dummy
+  // waypoints; short edges and back-edges have segments.length === 1.
+  const cmds = e.segments
+    .map((s) => `C ${s.c1.x} ${s.c1.y}, ${s.c2.x} ${s.c2.y}, ${s.end.x} ${s.end.y}`)
+    .join(' ');
+  const path = `M ${e.fromPoint.x} ${e.fromPoint.y} ${cmds}`;
 
   let labelEl = '';
   if (e.label !== undefined && e.label.length > 0) {
-    const mid = bezierMid(e.fromPoint, e.c1, e.c2, tip);
+    // Place label at the midpoint of the central segment so it doesn't
+    // collide with arrow tips on the endpoints.
+    const segIdx = Math.floor((e.segments.length - 1) / 2);
+    const seg = e.segments[segIdx];
+    let segStart: { x: number; y: number };
+    if (segIdx === 0) {
+      segStart = e.fromPoint;
+    } else {
+      const prev = e.segments[segIdx - 1];
+      segStart = prev ? prev.end : e.fromPoint;
+    }
+    const mid = seg
+      ? bezierMid(segStart, seg.c1, seg.c2, seg.end)
+      : { x: e.fromPoint.x, y: e.fromPoint.y };
     const labelWidth = Math.max(20, e.label.length * 7 + 12);
     const labelHeight = labelFontSize + 8;
     labelEl = `<rect class="ach-diag-edge-label-bg" x="${mid.x - labelWidth / 2}" y="${mid.y - labelHeight / 2}" width="${labelWidth}" height="${labelHeight}" rx="3" ry="3"/><text class="ach-diag-edge-label" x="${mid.x}" y="${mid.y}" font-family="${escapeXml(fontFamily)}" font-size="${labelFontSize}" text-anchor="middle" dominant-baseline="central">${escapeXml(e.label)}</text>`;
   }
 
   return `<path class="ach-diag-edge" d="${path}" stroke-width="${DEFAULTS.edgeStrokeWidth}" marker-end="url(#ach-diag-flow-arrow)"/>${labelEl}`;
-}
-
-function insetEndpoint(
-  p: { x: number; y: number },
-  side: 'top' | 'right' | 'bottom' | 'left',
-): { x: number; y: number } {
-  switch (side) {
-    case 'top':
-      return { x: p.x, y: p.y - ARROW_INSET };
-    case 'bottom':
-      return { x: p.x, y: p.y + ARROW_INSET };
-    case 'left':
-      return { x: p.x - ARROW_INSET, y: p.y };
-    case 'right':
-      return { x: p.x + ARROW_INSET, y: p.y };
-  }
 }
 
 function bezierMid(
