@@ -8,9 +8,11 @@
  * Self-loops route as a loop to the right of the node (no layering).
  * Multi-edges fan out via the same parallel-offset scheme as flowchart.
  *
- * The roadmap calls out Brandes-Köpf coordinate assignment as the
- * follow-up needed for inspector-scale (~200k nodes); that lands in a
- * later milestone — see roadmap.md "Cross-repo: achronyme-inspector".
+ * Brandes-Köpf 4-pass coordinate assignment (B&K 2001 + 2020 Erratum)
+ * is opt-in via `coordinateAssignment: 'brandes-kopf'` — see
+ * `./brandes-kopf/`. Default `'lerp'` is faster and tighter on bounds;
+ * B-K is preferable when straight inner segments matter on dense
+ * layers without significant long-edge content.
  */
 
 import { bezierBoundsTight } from '../flowchart/bezier.js';
@@ -32,10 +34,9 @@ export interface DAGLayoutOptions {
   charWidth?: number;
   minNodeWidth?: number;
   /** Coordinate-assignment strategy. Defaults to `'lerp'` (the original
-   *  barycenter-then-equal-spacing approach). Set to `'brandes-kopf'` to
-   *  use the 4-pass aligned algorithm; required for inspector-scale
-   *  graphs to avoid bend artifacts on long edges. See
-   *  `.claude/research/external/brandes-kopf-2001-notes.md`. */
+   *  barycenter-then-equal-spacing approach). Set to `'brandes-kopf'`
+   *  for the 4-pass aligned algorithm. Caveats + measurements:
+   *  `.claude/research/external/perf-2026-05-03-bk-scale.md`. */
   coordinateAssignment?: CoordinateAssignment;
 }
 

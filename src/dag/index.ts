@@ -42,8 +42,15 @@ export interface DAGLayoutConfig {
   withinLayerSpacing?: number;
   padding?: number;
   /** Coordinate-assignment strategy. Defaults to `'lerp'`. Set to
-   *  `'brandes-kopf'` to use the 4-pass aligned algorithm — recommended
-   *  for dense or long-edge-heavy graphs (inspector-scale, SHA-256 IR). */
+   *  `'brandes-kopf'` to use the 4-pass aligned algorithm (Brandes & Köpf
+   *  2001 with the 2020 Erratum). Trade-offs measured empirically:
+   *  - Consistently 1.7–2.5× slower than `'lerp'` (4 passes vs 1).
+   *  - Identical edge-bend count (depends on dummy insertion, not
+   *    coordinate assignment); the win is straight horizontal alignment
+   *    of long-edge inner segments and dense layers.
+   *  - **Caveat**: produces visibly wider bounds than `'lerp'` on
+   *    inputs with many multi-layer-spanning ("long") edges. See
+   *    `.claude/research/external/perf-2026-05-03-bk-scale.md`. */
   coordinateAssignment?: CoordinateAssignment;
 }
 
