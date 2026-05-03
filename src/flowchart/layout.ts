@@ -11,6 +11,7 @@
  */
 
 import type { FlowEdge, FlowNode, FlowchartDiagram } from '../types.js';
+import { bezierBoundsTight, bezierSelfIntersects } from './bezier.js';
 import { type FlowShape, widthFactorFor } from './shapes.js';
 
 export interface FlowLayoutOptions {
@@ -226,24 +227,7 @@ function computeControlPoints(
   routing: EdgeRouting,
 ): { c1: { x: number; y: number }; c2: { x: number; y: number } } {
   if (routing === 'side-loop') {
-    const chord = Math.hypot(to.x - from.x, to.y - from.y);
-    const detour = Math.max(60, Math.min(160, chord * 0.4));
-    const cFor = (
-      p: { x: number; y: number },
-      side: 'top' | 'right' | 'bottom' | 'left',
-    ): { x: number; y: number } => {
-      switch (side) {
-        case 'right':
-          return { x: p.x + detour, y: p.y };
-        case 'left':
-          return { x: p.x - detour, y: p.y };
-        case 'bottom':
-          return { x: p.x, y: p.y + detour };
-        case 'top':
-          return { x: p.x, y: p.y - detour };
-      }
-    };
-    return { c1: cFor(from, fromSide), c2: cFor(to, toSide) };
+    return computeSideLoopControlPoints(from, to, fromSide, toSide);
   }
   const verticalFlow = fromSide === 'bottom' || fromSide === 'top';
   if (verticalFlow) {
@@ -252,6 +236,49 @@ function computeControlPoints(
   }
   const midX = from.x + (to.x - from.x) / 2;
   return { c1: { x: midX, y: from.y }, c2: { x: midX, y: to.y } };
+}
+
+/**
+ * Side-loop control points with adaptive detour magnitude.
+ *
+ * Initial detour follows the empirical `clamp(60, chord*0.4, 160)` heuristic
+ * that produces visually pleasant C-shapes for typical flowchart layouts.
+ * If the resulting cubic self-intersects (Stone-DeRose discriminant — see
+ * `bezierSelfIntersects`), we grow the detour up to 4 doublings to escape
+ * the loop region. The growth is bounded so we never produce wildly oversized
+ * curves on pathological inputs.
+ */
+function computeSideLoopControlPoints(
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  fromSide: 'top' | 'right' | 'bottom' | 'left',
+  toSide: 'top' | 'right' | 'bottom' | 'left',
+): { c1: { x: number; y: number }; c2: { x: number; y: number } } {
+  const chord = Math.hypot(to.x - from.x, to.y - from.y);
+  let detour = Math.max(60, Math.min(160, chord * 0.4));
+  const cFor = (
+    p: { x: number; y: number },
+    side: 'top' | 'right' | 'bottom' | 'left',
+    d: number,
+  ): { x: number; y: number } => {
+    switch (side) {
+      case 'right':
+        return { x: p.x + d, y: p.y };
+      case 'left':
+        return { x: p.x - d, y: p.y };
+      case 'bottom':
+        return { x: p.x, y: p.y + d };
+      case 'top':
+        return { x: p.x, y: p.y - d };
+    }
+  };
+  for (let i = 0; i < 4; i++) {
+    const c1 = cFor(from, fromSide, detour);
+    const c2 = cFor(to, toSide, detour);
+    if (bezierSelfIntersects(from, c1, c2, to) !== 'loop') return { c1, c2 };
+    detour *= 1.5;
+  }
+  return { c1: cFor(from, fromSide, detour), c2: cFor(to, toSide, detour) };
 }
 
 function detectBackEdges(ir: FlowchartDiagram): Set<number> {
@@ -498,41 +525,21 @@ function computeBounds(
     if (n.x + n.width > maxX) maxX = n.x + n.width;
     if (n.y + n.height > maxY) maxY = n.y + n.height;
   }
-  // Side-loop bezier curves can extend past node bbox; sample the curve at
-  // a few points to grow the canvas. The control-point convex hull is a
-  // safe but loose upper bound — t = 0.5 gives the deepest excursion in
-  // practice for the C-shaped detours we emit.
+  // Side-loop bezier curves can extend past node bbox. Use exact tight bbox
+  // via roots of B'(t) = 0 (see `bezier.ts`) instead of a loose
+  // sample-based upper bound — produces a viewBox that fits the curve.
   for (const e of edges) {
-    for (const p of [
-      e.fromPoint,
-      e.toPoint,
-      e.c1,
-      e.c2,
-      bezierMid(e.fromPoint, e.c1, e.c2, e.toPoint),
-    ]) {
-      if (p.x < minX) minX = p.x;
-      if (p.y < minY) minY = p.y;
-      if (p.x > maxX) maxX = p.x;
-      if (p.y > maxY) maxY = p.y;
-    }
+    const b = bezierBoundsTight(e.fromPoint, e.c1, e.c2, e.toPoint);
+    if (b.minX < minX) minX = b.minX;
+    if (b.minY < minY) minY = b.minY;
+    if (b.maxX > maxX) maxX = b.maxX;
+    if (b.maxY > maxY) maxY = b.maxY;
   }
   return {
     minX: minX - padding,
     minY: minY - padding,
     maxX: maxX + padding,
     maxY: maxY + padding,
-  };
-}
-
-function bezierMid(
-  p0: { x: number; y: number },
-  p1: { x: number; y: number },
-  p2: { x: number; y: number },
-  p3: { x: number; y: number },
-): { x: number; y: number } {
-  return {
-    x: (p0.x + 3 * p1.x + 3 * p2.x + p3.x) / 8,
-    y: (p0.y + 3 * p1.y + 3 * p2.y + p3.y) / 8,
   };
 }
 
