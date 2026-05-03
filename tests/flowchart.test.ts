@@ -18,8 +18,7 @@ function parseCubicPath(d: string): Cubic[] {
   if (!moveMatch?.[1] || !moveMatch?.[2]) return [];
   let prev = { x: Number.parseFloat(moveMatch[1]), y: Number.parseFloat(moveMatch[2]) };
   const segs: Cubic[] = [];
-  const re =
-    /C\s+([\d.-]+)\s+([\d.-]+),\s*([\d.-]+)\s+([\d.-]+),\s*([\d.-]+)\s+([\d.-]+)/g;
+  const re = /C\s+([\d.-]+)\s+([\d.-]+),\s*([\d.-]+)\s+([\d.-]+),\s*([\d.-]+)\s+([\d.-]+)/g;
   let m: RegExpExecArray | null;
   // biome-ignore lint/suspicious/noAssignInExpressions: idiomatic regex iteration
   while ((m = re.exec(d)) !== null) {

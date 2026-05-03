@@ -5,6 +5,7 @@ export default defineConfig({
     index: 'src/index.ts',
     'pipeline/index': 'src/pipeline/index.ts',
     'flowchart/index': 'src/flowchart/index.ts',
+    'dag/index': 'src/dag/index.ts',
   },
   format: ['esm', 'cjs'],
   dts: true,

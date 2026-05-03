@@ -57,7 +57,37 @@ export interface FlowchartDiagram {
   readonly edges: ReadonlyArray<FlowEdge>;
 }
 
-export type DiagramIR = PipelineDiagram | FlowchartDiagram;
+export type DAGShape = 'rect' | 'circle' | 'ellipse' | 'diamond' | 'hexagon' | 'none';
+
+export type DAGEdgeStyle = 'solid' | 'dashed' | 'dotted';
+
+export interface DAGNode {
+  readonly id: string;
+  readonly label?: string;
+  readonly shape: DAGShape;
+  readonly width?: number;
+  readonly height?: number;
+  readonly fill?: string;
+  readonly stroke?: string;
+  readonly strokeWidth?: number;
+  readonly metadata?: Record<string, unknown>;
+}
+
+export interface DAGEdge {
+  readonly from: string;
+  readonly to: string;
+  readonly directed: boolean;
+  readonly label?: string;
+  readonly style: DAGEdgeStyle;
+}
+
+export interface DAGDiagram {
+  readonly kind: 'dag';
+  readonly nodes: ReadonlyArray<DAGNode>;
+  readonly edges: ReadonlyArray<DAGEdge>;
+}
+
+export type DiagramIR = PipelineDiagram | FlowchartDiagram | DAGDiagram;
 
 export interface RenderOptions {
   theme?: 'auto' | 'light' | 'dark' | Record<string, string>;

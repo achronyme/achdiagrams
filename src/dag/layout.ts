@@ -1,28 +1,23 @@
 /**
- * Flowchart layout — TB by default, supports cycles via DFS back-edge reversal.
+ * DAG layout — generic directed graph, allows cycles, self-loops, multi-edges.
  *
- * Pipeline (Sugiyama framework):
- * 1. Detect back-edges via DFS (cycles are valid in flowcharts).
- * 2. Layer the resulting DAG via longest-path on the forward edges.
- * 3. Insert dummy nodes for forward edges with span > 1 so every edge in the
- *    augmented graph spans exactly one layer (Sugiyama §4). Back-edges keep
- *    the side-loop visual cue and don't get dummies.
- * 4. Crossing reduction (barycenter) on the augmented graph — dummies
- *    influence ordering so long edges route through chosen X-positions.
- * 5. Coordinate assignment: real nodes laid out with compact spacing;
- *    dummies inserted between real-node X positions in barycenter order
- *    (zero width, no contribution to layer width).
- * 6. Edge geometry: each user-facing edge produces one PositionedFlowEdge.
- *    Short / back-edges have a single cubic segment. Long forward edges
- *    have one cubic per layer span, joined at dummy positions with
- *    vertical-tangent (TB) / horizontal-tangent (LR) at every waypoint.
+ * v1: same Sugiyama framework as flowchart (DFS back-edge reversal +
+ * longest-path layering + dummy nodes for long forward edges + barycenter
+ * crossing reduction), specialized for DAG shapes and edge metadata.
+ *
+ * Self-loops route as a loop to the right of the node (no layering).
+ * Multi-edges fan out via the same parallel-offset scheme as flowchart.
+ *
+ * The roadmap calls out Brandes-Köpf coordinate assignment as the
+ * follow-up needed for inspector-scale (~200k nodes); that lands in a
+ * later milestone — see roadmap.md "Cross-repo: achronyme-inspector".
  */
 
-import type { FlowEdge, FlowNode, FlowchartDiagram } from '../types.js';
-import { bezierBoundsTight, bezierSelfIntersects } from './bezier.js';
-import { type FlowShape, widthFactorFor } from './shapes.js';
+import { bezierBoundsTight } from '../flowchart/bezier.js';
+import type { DAGDiagram, DAGEdgeStyle, DAGShape } from '../types.js';
+import { widthFactorFor } from './shapes.js';
 
-export interface FlowLayoutOptions {
+export interface DAGLayoutOptions {
   direction?: 'TB' | 'LR';
   nodeHeight?: number;
   layerSpacing?: number;
@@ -32,18 +27,20 @@ export interface FlowLayoutOptions {
   minNodeWidth?: number;
 }
 
-export interface PositionedFlowNode {
+export interface PositionedDAGNode {
   id: string;
   label: string;
-  shape: FlowShape;
+  shape: DAGShape;
   x: number;
   y: number;
   width: number;
   height: number;
-  subtitle?: string;
+  fill?: string;
+  stroke?: string;
+  strokeWidth?: number;
 }
 
-export type EdgeRouting = 'direct' | 'side-loop';
+export type DAGEdgeRouting = 'direct' | 'side-loop' | 'self-loop';
 
 interface Point {
   x: number;
@@ -56,46 +53,41 @@ export interface CubicSegment {
   end: Point;
 }
 
-export interface PositionedFlowEdge {
+export interface PositionedDAGEdge {
   from: string;
   to: string;
   label?: string;
-  routing: EdgeRouting;
+  directed: boolean;
+  style: DAGEdgeStyle;
+  routing: DAGEdgeRouting;
   fromPoint: Point;
   toPoint: Point;
   fromAnchor: 'top' | 'right' | 'bottom' | 'left';
   toAnchor: 'top' | 'right' | 'bottom' | 'left';
-  // Cubic Bézier path. For short forward edges and back-edges this contains
-  // a single segment. For long forward edges (span > 1) it contains one
-  // segment per spanned layer, joined at dummy-node positions for smooth
-  // routing through intermediate layers (Sugiyama §4).
   segments: CubicSegment[];
+}
+
+export interface DAGLayout {
+  direction: 'TB' | 'LR';
+  nodes: PositionedDAGNode[];
+  edges: PositionedDAGEdge[];
+  bounds: { minX: number; minY: number; maxX: number; maxY: number };
 }
 
 const ARROW_INSET = 8;
 
-export interface FlowchartLayout {
-  direction: 'TB' | 'LR';
-  nodes: PositionedFlowNode[];
-  edges: PositionedFlowEdge[];
-  bounds: { minX: number; minY: number; maxX: number; maxY: number };
-}
-
 const DEFAULTS = {
   direction: 'TB' as const,
-  nodeHeight: 56,
+  nodeHeight: 48,
   layerSpacing: 56,
   withinLayerSpacing: 32,
   padding: 24,
   charWidth: 7.5,
-  textPaddingX: 28,
-  minNodeWidth: 96,
+  textPaddingX: 24,
+  minNodeWidth: 72,
 };
 
-export function layoutFlowchart(
-  ir: FlowchartDiagram,
-  options: FlowLayoutOptions = {},
-): FlowchartLayout {
+export function layoutDAG(ir: DAGDiagram, options: DAGLayoutOptions = {}): DAGLayout {
   const direction = options.direction ?? DEFAULTS.direction;
   const nodeHeight = options.nodeHeight ?? DEFAULTS.nodeHeight;
   const layerSpacing = options.layerSpacing ?? DEFAULTS.layerSpacing;
@@ -104,12 +96,16 @@ export function layoutFlowchart(
   const charWidth = options.charWidth ?? DEFAULTS.charWidth;
   const minNodeWidth = options.minNodeWidth ?? DEFAULTS.minNodeWidth;
 
-  const reversed = detectBackEdges(ir);
-  const layers = assignLayers(ir, reversed);
+  // Self-loops are removed from the layered graph and routed separately —
+  // they don't affect layering or crossing reduction.
+  const selfLoops = new Set<number>();
+  ir.edges.forEach((e, idx) => {
+    if (e.from === e.to) selfLoops.add(idx);
+  });
 
-  // Sugiyama §4: insert one dummy node per intermediate layer along each
-  // long forward edge. Back-edges retain side-loop routing.
-  const augmented = insertDummyNodes(ir, layers, reversed);
+  const reversed = detectBackEdges(ir, selfLoops);
+  const layers = assignLayers(ir, reversed, selfLoops);
+  const augmented = insertDummyNodes(ir, layers, reversed, selfLoops);
 
   const layersByIndexRaw = groupByLayerWithDummies(ir, augmented);
   const layersByIndex = reduceCrossings(
@@ -122,19 +118,19 @@ export function layoutFlowchart(
   const widths = new Map<string, number>();
   const heights = new Map<string, number>();
   for (const n of ir.nodes) {
-    const labelChars = Math.max(n.label.length, n.subtitle?.length ?? 0);
+    const labelText = n.label ?? n.id;
+    const labelChars = labelText.length;
     const labelWidth = Math.ceil(labelChars * charWidth) + DEFAULTS.textPaddingX;
     const factor = widthFactorFor(n.shape);
-    widths.set(n.id, Math.max(minNodeWidth, Math.round(labelWidth * factor)));
-    heights.set(n.id, n.subtitle !== undefined ? nodeHeight + 18 : nodeHeight);
+    const w = n.width ?? Math.max(minNodeWidth, Math.round(labelWidth * factor));
+    const h = n.height ?? nodeHeight;
+    widths.set(n.id, w);
+    heights.set(n.id, h);
   }
 
-  const positioned = new Map<string, PositionedFlowNode>();
+  const positioned = new Map<string, PositionedDAGNode>();
   const sortedLayerEntries = sortedLayers(layersByIndex);
 
-  // Layer width / height counting only real nodes. Dummies hold an ordering
-  // slot but consume zero extent — the long edge passes through their
-  // (interpolated) X without forcing the layer band wider.
   const layerWidthOfReals = (ids: string[]): number => {
     let sum = 0;
     let count = 0;
@@ -158,15 +154,13 @@ export function layoutFlowchart(
     return sum;
   };
 
-  // Layer band metadata. For TB: `start` is the top Y, `span` is the row
-  // height. For LR: `start` is the left X, `span` is the column width.
-  // Dummies span the FULL layer band so cubic segments only ever traverse
-  // the gaps between layer bands — never the bands themselves — keeping
-  // long edges clear of real-node bounding boxes (Sugiyama §4 strict).
   const layerBands = new Map<number, { start: number; span: number }>();
 
   if (direction === 'TB') {
-    const maxLayerWidth = Math.max(...sortedLayerEntries.map(([, ids]) => layerWidthOfReals(ids)));
+    const maxLayerWidth = Math.max(
+      0,
+      ...sortedLayerEntries.map(([, ids]) => layerWidthOfReals(ids)),
+    );
     const globalCenterX = padding + maxLayerWidth / 2;
 
     let cursorY = padding;
@@ -183,16 +177,7 @@ export function layoutFlowchart(
         if (!n) continue;
         const w = widths.get(id) ?? minNodeWidth;
         const h = heights.get(id) ?? nodeHeight;
-        positioned.set(id, {
-          id,
-          label: n.label,
-          shape: n.shape,
-          x: cursorX,
-          y: cursorY + (layerHeight - h) / 2,
-          width: w,
-          height: h,
-          ...(n.subtitle !== undefined ? { subtitle: n.subtitle } : {}),
-        });
+        positioned.set(id, makePositioned(n, cursorX, cursorY + (layerHeight - h) / 2, w, h));
         cursorX += w + withinLayerSpacing;
       }
       layerBands.set(layerIdx, { start: cursorY, span: layerHeight });
@@ -200,6 +185,7 @@ export function layoutFlowchart(
     }
   } else {
     const maxLayerHeight = Math.max(
+      0,
       ...sortedLayerEntries.map(([, ids]) => layerHeightOfReals(ids)),
     );
     const globalCenterY = padding + maxLayerHeight / 2;
@@ -218,16 +204,7 @@ export function layoutFlowchart(
         if (!n) continue;
         const w = widths.get(id) ?? minNodeWidth;
         const h = heights.get(id) ?? nodeHeight;
-        positioned.set(id, {
-          id,
-          label: n.label,
-          shape: n.shape,
-          x: cursorX + (layerWidth - w) / 2,
-          y: cursorY,
-          width: w,
-          height: h,
-          ...(n.subtitle !== undefined ? { subtitle: n.subtitle } : {}),
-        });
+        positioned.set(id, makePositioned(n, cursorX + (layerWidth - w) / 2, cursorY, w, h));
         cursorY += h + withinLayerSpacing;
       }
       layerBands.set(layerIdx, { start: cursorX, span: layerWidth });
@@ -235,9 +212,6 @@ export function layoutFlowchart(
     }
   }
 
-  // Position dummies. Within each layer, dummies sit between adjacent real
-  // nodes in the barycenter-sorted order, evenly distributed across the gap.
-  // Their cross-axis position (Y for TB, X for LR) is the layer mid-band.
   positionDummies(
     sortedLayerEntries,
     augmented.dummyIds,
@@ -247,25 +221,28 @@ export function layoutFlowchart(
     withinLayerSpacing,
   );
 
-  // Pre-pass: count parallel edges so each gets a perpendicular offset and
-  // they fan out instead of stacking. The offset applies to both short and
-  // long forward edges — for long edges it shifts the dummy waypoints
-  // perpendicular to the flow so parallel chains visually separate.
+  // Multi-edge fan-out: count parallels per (from,to) pair.
   const parallelCount = new Map<string, number>();
   for (const e of ir.edges) {
+    if (e.from === e.to) continue;
     const k = `${e.from}|${e.to}`;
     parallelCount.set(k, (parallelCount.get(k) ?? 0) + 1);
   }
   const parallelSeen = new Map<string, number>();
 
-  const edges: PositionedFlowEdge[] = ir.edges.map((e, idx) => {
-    const wasReversed = reversed.has(idx);
+  const edges: PositionedDAGEdge[] = ir.edges.map((e, idx) => {
     const f = positioned.get(e.from);
     const t = positioned.get(e.to);
     if (!f || !t) {
       throw new Error(`Internal: edge references unknown node ${e.from} -> ${e.to}`);
     }
-    const routing: EdgeRouting = wasReversed ? 'side-loop' : 'direct';
+
+    if (selfLoops.has(idx)) {
+      return buildSelfLoop(e, f, direction);
+    }
+
+    const wasReversed = reversed.has(idx);
+    const routing: DAGEdgeRouting = wasReversed ? 'side-loop' : 'direct';
     const chain = augmented.edgeChain.get(idx) ?? [e.from, e.to];
     const isLong = chain.length > 2;
 
@@ -279,7 +256,7 @@ export function layoutFlowchart(
     const { fromAnchor, toAnchor } = resolveAnchors(f, t, direction, routing);
     const fromPoint = anchorPoint(f, fromAnchor);
     const toPoint = anchorPoint(t, toAnchor);
-    const tip = insetPoint(toPoint, toAnchor);
+    const tip = e.directed ? insetPoint(toPoint, toAnchor) : toPoint;
 
     let segments: CubicSegment[];
     if (routing === 'side-loop') {
@@ -303,6 +280,8 @@ export function layoutFlowchart(
       from: e.from,
       to: e.to,
       ...(e.label !== undefined ? { label: e.label } : {}),
+      directed: e.directed,
+      style: e.style,
       routing,
       fromPoint,
       toPoint,
@@ -312,27 +291,93 @@ export function layoutFlowchart(
     };
   });
 
-  // Strip dummies from the rendered nodes list. They served their purpose
-  // in routing and have no on-screen representation.
   const nodes = [...positioned.values()].filter((n) => !augmented.dummyIds.has(n.id));
   return { direction, nodes, edges, bounds: computeBounds(nodes, edges, padding) };
+}
+
+function makePositioned(
+  meta: {
+    id: string;
+    label?: string;
+    shape: DAGShape;
+    fill?: string;
+    stroke?: string;
+    strokeWidth?: number;
+  },
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+): PositionedDAGNode {
+  const node: PositionedDAGNode = {
+    id: meta.id,
+    label: meta.label ?? meta.id,
+    shape: meta.shape,
+    x,
+    y,
+    width,
+    height,
+  };
+  if (meta.fill !== undefined) node.fill = meta.fill;
+  if (meta.stroke !== undefined) node.stroke = meta.stroke;
+  if (meta.strokeWidth !== undefined) node.strokeWidth = meta.strokeWidth;
+  return node;
+}
+
+/**
+ * Self-loop: half-circle to the right of the node, anchored on top-right
+ * and right-edge. For LR direction, anchored on top and top-right instead.
+ */
+function buildSelfLoop(
+  e: { from: string; to: string; directed: boolean; style: DAGEdgeStyle; label?: string },
+  n: PositionedDAGNode,
+  direction: 'TB' | 'LR',
+): PositionedDAGEdge {
+  const LOOP_R = 22;
+  const fromAnchor = direction === 'TB' ? 'right' : 'top';
+  const toAnchor = direction === 'TB' ? 'top' : 'right';
+  const fromPoint = anchorPoint(n, fromAnchor);
+  const toPoint = anchorPoint(n, toAnchor);
+  const tip = e.directed ? insetPoint(toPoint, toAnchor) : toPoint;
+
+  // Compose a single cubic that arcs out away from the node.
+  const c1: Point =
+    direction === 'TB'
+      ? { x: fromPoint.x + LOOP_R, y: fromPoint.y - LOOP_R / 2 }
+      : { x: fromPoint.x + LOOP_R / 2, y: fromPoint.y - LOOP_R };
+  const c2: Point =
+    direction === 'TB'
+      ? { x: tip.x + LOOP_R / 2, y: tip.y - LOOP_R }
+      : { x: tip.x + LOOP_R, y: tip.y - LOOP_R / 2 };
+
+  const out: PositionedDAGEdge = {
+    from: e.from,
+    to: e.to,
+    directed: e.directed,
+    style: e.style,
+    routing: 'self-loop',
+    fromPoint,
+    toPoint,
+    fromAnchor,
+    toAnchor,
+    segments: [{ c1, c2, end: tip }],
+  };
+  if (e.label !== undefined) out.label = e.label;
+  return out;
 }
 
 interface DummyInsertion {
   dummyIds: Set<string>;
   layerOf: Map<string, number>;
-  // Per original edge index: ordered chain of waypoint IDs from `from` to `to`
-  // (length = span + 1). Length 2 means no dummies were inserted.
   edgeChain: Map<number, string[]>;
-  // 1-layer-spanning segment edges in DAG-order (lower-layer node first).
-  // Used by crossing reduction.
   segmentEdges: Array<{ from: string; to: string }>;
 }
 
 function insertDummyNodes(
-  ir: FlowchartDiagram,
+  ir: DAGDiagram,
   layers: Map<string, number>,
   reversed: Set<number>,
+  selfLoops: Set<number>,
 ): DummyInsertion {
   const dummyIds = new Set<string>();
   const layerOf = new Map(layers);
@@ -340,12 +385,14 @@ function insertDummyNodes(
   const segmentEdges: Array<{ from: string; to: string }> = [];
 
   ir.edges.forEach((e, idx) => {
+    if (selfLoops.has(idx)) {
+      edgeChain.set(idx, [e.from, e.to]);
+      return;
+    }
     const lf = layers.get(e.from) ?? 0;
     const lt = layers.get(e.to) ?? 0;
 
     if (reversed.has(idx)) {
-      // Back-edge — side-loop visual; no dummies. Contribute to crossing
-      // reduction only when the DAG-reversed form spans exactly one layer.
       edgeChain.set(idx, [e.from, e.to]);
       const dagSpan = Math.abs(lt - lf);
       if (dagSpan === 1) {
@@ -358,13 +405,11 @@ function insertDummyNodes(
 
     const span = lt - lf;
     if (span <= 1) {
-      // Self-loop or 1-layer forward edge: no dummies, single segment.
       edgeChain.set(idx, [e.from, e.to]);
       if (span === 1) segmentEdges.push({ from: e.from, to: e.to });
       return;
     }
 
-    // span > 1: insert dummies at every intermediate layer.
     const chain: string[] = [e.from];
     for (let l = lf + 1; l < lt; l++) {
       const did = `__dummy_e${idx}_l${l}`;
@@ -386,7 +431,7 @@ function insertDummyNodes(
   return { dummyIds, layerOf, edgeChain, segmentEdges };
 }
 
-function groupByLayerWithDummies(ir: FlowchartDiagram, d: DummyInsertion): Map<number, string[]> {
+function groupByLayerWithDummies(ir: DAGDiagram, d: DummyInsertion): Map<number, string[]> {
   const byLayer = new Map<number, string[]>();
   for (const n of ir.nodes) {
     const l = d.layerOf.get(n.id) ?? 0;
@@ -403,23 +448,10 @@ function groupByLayerWithDummies(ir: FlowchartDiagram, d: DummyInsertion): Map<n
   return byLayer;
 }
 
-/**
- * Position dummy nodes in a second pass after real nodes have been placed.
- *
- * Dummies span the FULL layer band (height for TB, width for LR) at width 0
- * (resp. height 0) so cubic segments connecting consecutive waypoints only
- * traverse the GAPS between layer bands — never the bands themselves. This
- * guarantees long edges clear every intermediate-layer real node, not just
- * the dummy's own (zero-area) bbox.
- *
- * Within a layer, dummies that fall between two real nodes (or before the
- * first / after the last) in the barycenter-sorted order get evenly
- * distributed across the gap on the cross-axis (X for TB, Y for LR).
- */
 function positionDummies(
   sortedLayerEntries: Array<[number, string[]]>,
   dummyIds: Set<string>,
-  positioned: Map<string, PositionedFlowNode>,
+  positioned: Map<string, PositionedDAGNode>,
   layerBands: Map<number, { start: number; span: number }>,
   direction: 'TB' | 'LR',
   withinLayerSpacing: number,
@@ -428,13 +460,11 @@ function positionDummies(
     const band = layerBands.get(layerIdx) ?? { start: 0, span: 0 };
     const midBand = band.start + band.span / 2;
 
-    // Walk ordered ids, accumulating dummies between real anchors.
     let leftAnchor: number | null = null;
     let pendingDummies: string[] = [];
 
     const flushDummies = (rightAnchor: number | null): void => {
       if (pendingDummies.length === 0) return;
-      // Determine span between left and right anchors.
       let xLeft: number;
       let xRight: number;
       if (leftAnchor !== null && rightAnchor !== null) {
@@ -454,15 +484,10 @@ function positionDummies(
       pendingDummies.forEach((did, i) => {
         const t = (i + 1) / slots;
         const interp = xLeft + (xRight - xLeft) * t;
-        // TB: dummy is a zero-width vertical strip at x=interp spanning
-        // the whole layer band [start, start+span] in Y. Top anchor =
-        // (interp, start), bottom anchor = (interp, start+span).
-        // LR: zero-height horizontal strip at y=interp spanning the layer
-        // band in X.
         positioned.set(did, {
           id: did,
           label: '',
-          shape: 'process' as FlowShape,
+          shape: 'rect',
           x: direction === 'TB' ? interp : band.start,
           y: direction === 'TB' ? band.start : interp,
           width: direction === 'TB' ? 0 : band.span,
@@ -478,8 +503,6 @@ function positionDummies(
       } else {
         const realPos = positioned.get(id);
         if (!realPos) continue;
-        // Use real-node BOX EDGES (not centres) so dummies sit in the gap
-        // between adjacent reals — never inside a real's bounding box.
         const nearEdge = direction === 'TB' ? realPos.x : realPos.y;
         const farEdge = direction === 'TB' ? realPos.x + realPos.width : realPos.y + realPos.height;
         flushDummies(nearEdge);
@@ -490,29 +513,15 @@ function positionDummies(
   }
 }
 
-/**
- * Build the multi-segment cubic Bézier path for a long forward edge.
- *
- * Each segment connects consecutive waypoints (real source, dummies, real
- * target). Control points use the existing axis-symmetric scheme: midline
- * shared between c1 and c2 perpendicular to the flow, c1.x = w0.x and
- * c2.x = w1.x for TB (swap axes for LR). This keeps tangents axis-aligned
- * at every waypoint, giving G¹ continuity and a smooth flowing path.
- */
 function buildMultiSegmentPath(
   fromPoint: Point,
   tipPoint: Point,
   fromAnchor: 'top' | 'right' | 'bottom' | 'left',
   chain: string[],
-  positioned: Map<string, PositionedFlowNode>,
+  positioned: Map<string, PositionedDAGNode>,
   parallelOffset = 0,
 ): CubicSegment[] {
   const verticalFlow = fromAnchor === 'bottom' || fromAnchor === 'top';
-  // Each intermediate dummy contributes TWO waypoints — entry (top/left)
-  // and exit (bottom/right) of the layer band. The cubic between them is
-  // a degenerate straight line (axis-aligned) traversing the dummy's own
-  // zero-area strip; the cubic *between* dummies traverses only the gap
-  // between two layer bands.
   const waypoints: Point[] = [fromPoint];
   for (let i = 1; i < chain.length - 1; i++) {
     const did = chain[i];
@@ -520,8 +529,6 @@ function buildMultiSegmentPath(
     const dp = positioned.get(did);
     if (!dp) continue;
     if (verticalFlow) {
-      // Top entry then bottom exit, both at the (offset) x-position so
-      // the within-band traversal is a straight vertical line.
       const x = dp.x + parallelOffset;
       waypoints.push({ x, y: dp.y });
       waypoints.push({ x, y: dp.y + dp.height });
@@ -540,18 +547,10 @@ function buildMultiSegmentPath(
     if (!w0 || !w1) continue;
     if (verticalFlow) {
       const midY = (w0.y + w1.y) / 2;
-      segments.push({
-        c1: { x: w0.x, y: midY },
-        c2: { x: w1.x, y: midY },
-        end: w1,
-      });
+      segments.push({ c1: { x: w0.x, y: midY }, c2: { x: w1.x, y: midY }, end: w1 });
     } else {
       const midX = (w0.x + w1.x) / 2;
-      segments.push({
-        c1: { x: midX, y: w0.y },
-        c2: { x: midX, y: w1.y },
-        end: w1,
-      });
+      segments.push({ c1: { x: midX, y: w0.y }, c2: { x: midX, y: w1.y }, end: w1 });
     }
   }
   return segments;
@@ -580,29 +579,13 @@ function computeDirectControlPoints(
   if (verticalFlow) {
     const midY = from.y + (to.y - from.y) / 2;
     const dx = parallelOffset;
-    return {
-      c1: { x: from.x + dx, y: midY },
-      c2: { x: to.x + dx, y: midY },
-    };
+    return { c1: { x: from.x + dx, y: midY }, c2: { x: to.x + dx, y: midY } };
   }
   const midX = from.x + (to.x - from.x) / 2;
   const dy = parallelOffset;
-  return {
-    c1: { x: midX, y: from.y + dy },
-    c2: { x: midX, y: to.y + dy },
-  };
+  return { c1: { x: midX, y: from.y + dy }, c2: { x: midX, y: to.y + dy } };
 }
 
-/**
- * Side-loop control points with adaptive detour magnitude.
- *
- * Initial detour follows the empirical `clamp(60, chord*0.4, 160)` heuristic
- * that produces visually pleasant C-shapes for typical flowchart layouts.
- * If the resulting cubic self-intersects (Stone-DeRose discriminant — see
- * `bezierSelfIntersects`), we grow the detour up to 4 doublings to escape
- * the loop region. The growth is bounded so we never produce wildly oversized
- * curves on pathological inputs.
- */
 function computeSideLoopControlPoints(
   from: Point,
   to: Point,
@@ -610,7 +593,7 @@ function computeSideLoopControlPoints(
   toSide: 'top' | 'right' | 'bottom' | 'left',
 ): { c1: Point; c2: Point } {
   const chord = Math.hypot(to.x - from.x, to.y - from.y);
-  let detour = Math.max(60, Math.min(160, chord * 0.4));
+  const detour = Math.max(60, Math.min(160, chord * 0.4));
   const cFor = (p: Point, side: 'top' | 'right' | 'bottom' | 'left', d: number): Point => {
     switch (side) {
       case 'right':
@@ -623,19 +606,16 @@ function computeSideLoopControlPoints(
         return { x: p.x, y: p.y - d };
     }
   };
-  for (let i = 0; i < 4; i++) {
-    const c1 = cFor(from, fromSide, detour);
-    const c2 = cFor(to, toSide, detour);
-    if (bezierSelfIntersects(from, c1, c2, to) !== 'loop') return { c1, c2 };
-    detour *= 1.5;
-  }
   return { c1: cFor(from, fromSide, detour), c2: cFor(to, toSide, detour) };
 }
 
-function detectBackEdges(ir: FlowchartDiagram): Set<number> {
+function detectBackEdges(ir: DAGDiagram, selfLoops: Set<number>): Set<number> {
   const out = new Map<string, Array<{ to: string; idx: number }>>();
   for (const n of ir.nodes) out.set(n.id, []);
-  ir.edges.forEach((e, idx) => out.get(e.from)?.push({ to: e.to, idx }));
+  ir.edges.forEach((e, idx) => {
+    if (selfLoops.has(idx)) return;
+    out.get(e.from)?.push({ to: e.to, idx });
+  });
 
   const WHITE = 0;
   const GRAY = 1;
@@ -656,14 +636,18 @@ function detectBackEdges(ir: FlowchartDiagram): Set<number> {
     }
     color.set(u, BLACK);
   };
-
   for (const n of ir.nodes) {
     if (color.get(n.id) === WHITE) dfs(n.id);
   }
+  void BLACK;
   return back;
 }
 
-function assignLayers(ir: FlowchartDiagram, reversed: Set<number>): Map<string, number> {
+function assignLayers(
+  ir: DAGDiagram,
+  reversed: Set<number>,
+  selfLoops: Set<number>,
+): Map<string, number> {
   const inEdges = new Map<string, string[]>();
   const outEdges = new Map<string, string[]>();
   for (const n of ir.nodes) {
@@ -671,6 +655,7 @@ function assignLayers(ir: FlowchartDiagram, reversed: Set<number>): Map<string, 
     outEdges.set(n.id, []);
   }
   ir.edges.forEach((e, idx) => {
+    if (selfLoops.has(idx)) return;
     if (reversed.has(idx)) {
       inEdges.get(e.from)?.push(e.to);
       outEdges.get(e.to)?.push(e.from);
@@ -706,18 +691,11 @@ function assignLayers(ir: FlowchartDiagram, reversed: Set<number>): Map<string, 
     }
     layer.set(u, maxPred + 1);
   }
+  // Stranded nodes (cycle remnants) land in layer 0.
+  for (const n of ir.nodes) if (!layer.has(n.id)) layer.set(n.id, 0);
   return layer;
 }
 
-/**
- * Sugiyama phase 3 — crossing reduction via barycenter heuristic.
- *
- * Operates on the dummy-augmented graph: every entry in `segmentEdges`
- * spans exactly one layer pair, so the barycenter calculation works
- * uniformly over real and dummy waypoints. We sweep down then up for a
- * few iterations (4 by default — well past diminishing returns for
- * typical 1-2 dozen-layer graphs).
- */
 function reduceCrossings(
   byLayer: Map<number, string[]>,
   layers: Map<string, number>,
@@ -793,18 +771,16 @@ function sortedLayers(byLayer: Map<number, string[]>): Array<[number, string[]]>
 }
 
 function resolveAnchors(
-  from: PositionedFlowNode,
-  to: PositionedFlowNode,
+  from: PositionedDAGNode,
+  to: PositionedDAGNode,
   direction: 'TB' | 'LR',
-  routing: EdgeRouting,
+  routing: DAGEdgeRouting,
 ): {
   fromAnchor: 'top' | 'right' | 'bottom' | 'left';
   toAnchor: 'top' | 'right' | 'bottom' | 'left';
 } {
   if (routing === 'side-loop') {
-    if (direction === 'TB') {
-      return { fromAnchor: 'right', toAnchor: 'right' };
-    }
+    if (direction === 'TB') return { fromAnchor: 'right', toAnchor: 'right' };
     return { fromAnchor: 'bottom', toAnchor: 'bottom' };
   }
   if (direction === 'TB') {
@@ -817,7 +793,7 @@ function resolveAnchors(
   return { fromAnchor: 'right', toAnchor: 'left' };
 }
 
-function anchorPoint(n: PositionedFlowNode, side: 'top' | 'right' | 'bottom' | 'left'): Point {
+function anchorPoint(n: PositionedDAGNode, side: 'top' | 'right' | 'bottom' | 'left'): Point {
   switch (side) {
     case 'top':
       return { x: n.x + n.width / 2, y: n.y };
@@ -831,8 +807,8 @@ function anchorPoint(n: PositionedFlowNode, side: 'top' | 'right' | 'bottom' | '
 }
 
 function computeBounds(
-  nodes: PositionedFlowNode[],
-  edges: PositionedFlowEdge[],
+  nodes: PositionedDAGNode[],
+  edges: PositionedDAGEdge[],
   padding: number,
 ): { minX: number; minY: number; maxX: number; maxY: number } {
   if (nodes.length === 0) {
@@ -848,8 +824,6 @@ function computeBounds(
     if (n.x + n.width > maxX) maxX = n.x + n.width;
     if (n.y + n.height > maxY) maxY = n.y + n.height;
   }
-  // Each edge can extend past node bbox via curved segments. Iterate over
-  // every cubic segment in every edge using the exact tight bbox.
   for (const e of edges) {
     let prev = e.fromPoint;
     for (const seg of e.segments) {
@@ -868,5 +842,3 @@ function computeBounds(
     maxY: maxY + padding,
   };
 }
-
-export type { FlowEdge, FlowNode };

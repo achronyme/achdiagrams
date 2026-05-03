@@ -31,6 +31,11 @@
       "types": "./dist/flowchart/index.d.ts",
       "import": "./dist/flowchart/index.js",
       "require": "./dist/flowchart/index.cjs"
+    },
+    "./dag": {
+      "types": "./dist/dag/index.d.ts",
+      "import": "./dist/dag/index.js",
+      "require": "./dist/dag/index.cjs"
     }
   },
   "files": ["dist", "LICENSE", "README.md"],

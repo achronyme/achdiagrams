@@ -7,11 +7,17 @@
  * Remaining: DAG, sequence, state, architecture, WASM lazy-loaded.
  */
 
+import { type DAGBuilder, dag } from './dag/index.js';
 import { type FlowchartBuilder, flowchart } from './flowchart/index.js';
 import { type PipelineBuilder, pipeline } from './pipeline/index.js';
 
 export type {
   CompileError,
+  DAGDiagram,
+  DAGEdge,
+  DAGEdgeStyle,
+  DAGNode,
+  DAGShape,
   DiagramBuildIssue,
   DiagramIR,
   DiagramKind,
@@ -38,13 +44,22 @@ export {
   type FlowNodeConfig,
   type FlowEdgeConfig,
 } from './flowchart/index.js';
+export {
+  dag,
+  type DAGBuilder,
+  type DAGNodeConfig,
+  type DAGEdgeConfig,
+  type DAGLayoutConfig,
+} from './dag/index.js';
 
 export interface DiagramFactory {
   pipeline(): PipelineBuilder;
   flowchart(): FlowchartBuilder;
+  dag(): DAGBuilder;
 }
 
 export const diagram: DiagramFactory = {
   pipeline,
   flowchart,
+  dag,
 };
