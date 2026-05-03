@@ -97,47 +97,97 @@ export function horizontalCompact(input: CompactionInput): CompactionOutput {
   /**
    * Erratum Alg. 3a — place an entire block, not just the root.
    *
-   * Walks the block via `align[]` (singly-linked cycle starting and
-   * ending at v). For each member w with a left predecessor in its
-   * pass-local layer, recursively place the predecessor's block, then
-   * either merge sinks (if v has no class yet) or push v's x outward
-   * by δ to maintain separation within the same class.
+   * Iterative two-phase DFS. The recursive form blows the JS stack on
+   * inspector-scale graphs (50k+ vertices), so we maintain an explicit
+   * frame stack:
+   *   - phase 0: collect every dep (root[pred[w]] for each block member)
+   *   - phase 1: drain deps onto the stack; once all are placed, run the
+   *     original block-walk to set x[v]/sink[v], then propagate to every
+   *     other block member.
    *
-   * After the block walk, propagate v's final x and sink to every other
-   * member of the block — this is the Erratum's correction over the
-   * original Alg. 3 (which only set the root's x and relied on a buggy
-   * post-pass for inner members).
+   * Walks the block via `align[]` (singly-linked cycle starting and
+   * ending at v). Per the Erratum, we align the WHOLE block (not just
+   * the root) — so each placed root re-broadcasts x/sink across its
+   * align-cycle. This is the correction over the original 2001 Alg. 3.
    */
-  function placeBlock(v: string): void {
-    if (x.has(v)) return;
-    x.set(v, 0);
-    let w = v;
-    do {
-      const pw = pred.get(w);
-      if (pw !== undefined) {
-        const u = root.get(pw) ?? pw;
-        placeBlock(u);
-        if (sink.get(v) === v) sink.set(v, sink.get(u) ?? u);
-        if (sink.get(v) === sink.get(u)) {
-          x.set(v, Math.max(x.get(v) ?? 0, (x.get(u) ?? 0) + delta));
+  type Frame = { v: string; phase: 0 | 1; deps: string[]; idx: number };
+
+  function placeBlockIter(start: string): void {
+    if (x.has(start)) return;
+    const stack: Frame[] = [{ v: start, phase: 0, deps: [], idx: 0 }];
+
+    while (stack.length > 0) {
+      const top = stack[stack.length - 1];
+      if (!top) break;
+
+      if (top.phase === 0) {
+        // Already placed (or marked in-progress) — bail.
+        if (x.has(top.v)) {
+          stack.pop();
+          continue;
+        }
+        // Sentinel: marks block as in-progress (re-entries return early).
+        x.set(top.v, 0);
+        // Collect deps: every distinct root[pred[w]] across the block.
+        const deps: string[] = [];
+        let w = top.v;
+        do {
+          const pw = pred.get(w);
+          if (pw !== undefined) {
+            const u = root.get(pw) ?? pw;
+            if (u !== top.v) deps.push(u);
+          }
+          w = align.get(w) ?? w;
+        } while (w !== top.v);
+        top.deps = deps;
+        top.idx = 0;
+        top.phase = 1;
+        continue;
+      }
+
+      // phase 1: drain deps, then finalize.
+      let pushed = false;
+      while (top.idx < top.deps.length) {
+        const u = top.deps[top.idx++];
+        if (u !== undefined && !x.has(u)) {
+          stack.push({ v: u, phase: 0, deps: [], idx: 0 });
+          pushed = true;
+          break;
         }
       }
-      w = align.get(w) ?? w;
-    } while (w !== v);
+      if (pushed) continue;
 
-    // Align the whole block: walk align[] forward from v, copying v's
-    // x and sink to every member. This is the Erratum's Alg. 3a fix.
-    while ((align.get(w) ?? w) !== v) {
-      w = align.get(w) ?? w;
-      x.set(w, x.get(v) ?? 0);
-      sink.set(w, sink.get(v) ?? v);
+      // All deps placed — run the original block walk for placement.
+      const v = top.v;
+      let w = v;
+      do {
+        const pw = pred.get(w);
+        if (pw !== undefined) {
+          const u = root.get(pw) ?? pw;
+          if (sink.get(v) === v) sink.set(v, sink.get(u) ?? u);
+          if (sink.get(v) === sink.get(u)) {
+            x.set(v, Math.max(x.get(v) ?? 0, (x.get(u) ?? 0) + delta));
+          }
+        }
+        w = align.get(w) ?? w;
+      } while (w !== v);
+
+      // Erratum Alg. 3a: propagate v's x and sink to every other
+      // block member (singly-linked align-cycle forward walk).
+      while ((align.get(w) ?? w) !== v) {
+        w = align.get(w) ?? w;
+        x.set(w, x.get(v) ?? 0);
+        sink.set(w, sink.get(v) ?? v);
+      }
+
+      stack.pop();
     }
   }
 
-  // Step 1: place every block (root pass — recursion handles the rest).
+  // Step 1: place every block (root pass — iterative DFS handles the rest).
   for (const layer of layers) {
     for (const id of layer) {
-      if (root.get(id) === id) placeBlock(id);
+      if (root.get(id) === id) placeBlockIter(id);
     }
   }
 
