@@ -50,6 +50,7 @@ export {
   type DAGNodeConfig,
   type DAGEdgeConfig,
   type DAGLayoutConfig,
+  type CoordinateAssignment,
 } from './dag/index.js';
 
 export interface DiagramFactory {

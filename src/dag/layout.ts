@@ -15,7 +15,13 @@
 
 import { bezierBoundsTight } from '../flowchart/bezier.js';
 import type { DAGDiagram, DAGEdgeStyle, DAGShape } from '../types.js';
+import { type Pass, verticalAlign } from './brandes-kopf/alignment.js';
+import { balance } from './brandes-kopf/balance.js';
+import { horizontalCompact } from './brandes-kopf/compaction.js';
+import { markType1Conflicts } from './brandes-kopf/conflicts.js';
 import { widthFactorFor } from './shapes.js';
+
+export type CoordinateAssignment = 'lerp' | 'brandes-kopf';
 
 export interface DAGLayoutOptions {
   direction?: 'TB' | 'LR';
@@ -25,6 +31,12 @@ export interface DAGLayoutOptions {
   padding?: number;
   charWidth?: number;
   minNodeWidth?: number;
+  /** Coordinate-assignment strategy. Defaults to `'lerp'` (the original
+   *  barycenter-then-equal-spacing approach). Set to `'brandes-kopf'` to
+   *  use the 4-pass aligned algorithm; required for inspector-scale
+   *  graphs to avoid bend artifacts on long edges. See
+   *  `.claude/research/external/brandes-kopf-2001-notes.md`. */
+  coordinateAssignment?: CoordinateAssignment;
 }
 
 export interface PositionedDAGNode {
@@ -156,70 +168,131 @@ export function layoutDAG(ir: DAGDiagram, options: DAGLayoutOptions = {}): DAGLa
 
   const layerBands = new Map<number, { start: number; span: number }>();
 
+  // Optional Brandes-Köpf cross-axis positions (computed once if requested).
+  const useBk = options.coordinateAssignment === 'brandes-kopf';
+  const bkPos = useBk
+    ? computeBrandesKopfPositions(
+        sortedLayerEntries,
+        augmented,
+        widths,
+        heights,
+        direction,
+        withinLayerSpacing,
+        minNodeWidth,
+        nodeHeight,
+      )
+    : null;
+
   if (direction === 'TB') {
-    const maxLayerWidth = Math.max(
-      0,
-      ...sortedLayerEntries.map(([, ids]) => layerWidthOfReals(ids)),
-    );
+    const maxLayerWidth = useBk
+      ? maxBkExtent(
+          sortedLayerEntries,
+          bkPos as Map<string, number>,
+          augmented.dummyIds,
+          widths,
+          minNodeWidth,
+        )
+      : Math.max(0, ...sortedLayerEntries.map(([, ids]) => layerWidthOfReals(ids)));
     const globalCenterX = padding + maxLayerWidth / 2;
 
     let cursorY = padding;
     for (const [layerIdx, ids] of sortedLayerEntries) {
       const realIds = ids.filter((id) => !augmented.dummyIds.has(id));
-      const layerWidth = layerWidthOfReals(ids);
       const layerHeight =
         realIds.length > 0
           ? Math.max(...realIds.map((id) => heights.get(id) ?? nodeHeight))
           : nodeHeight;
-      let cursorX = globalCenterX - layerWidth / 2;
-      for (const id of realIds) {
-        const n = nodeMeta.get(id);
-        if (!n) continue;
-        const w = widths.get(id) ?? minNodeWidth;
-        const h = heights.get(id) ?? nodeHeight;
-        positioned.set(id, makePositioned(n, cursorX, cursorY + (layerHeight - h) / 2, w, h));
-        cursorX += w + withinLayerSpacing;
+
+      if (useBk && bkPos !== null) {
+        for (const id of realIds) {
+          const n = nodeMeta.get(id);
+          if (!n) continue;
+          const w = widths.get(id) ?? minNodeWidth;
+          const h = heights.get(id) ?? nodeHeight;
+          const xPos = padding + (bkPos.get(id) ?? 0);
+          positioned.set(id, makePositioned(n, xPos, cursorY + (layerHeight - h) / 2, w, h));
+        }
+      } else {
+        const layerWidth = layerWidthOfReals(ids);
+        let cursorX = globalCenterX - layerWidth / 2;
+        for (const id of realIds) {
+          const n = nodeMeta.get(id);
+          if (!n) continue;
+          const w = widths.get(id) ?? minNodeWidth;
+          const h = heights.get(id) ?? nodeHeight;
+          positioned.set(id, makePositioned(n, cursorX, cursorY + (layerHeight - h) / 2, w, h));
+          cursorX += w + withinLayerSpacing;
+        }
       }
       layerBands.set(layerIdx, { start: cursorY, span: layerHeight });
       cursorY += layerHeight + layerSpacing;
     }
   } else {
-    const maxLayerHeight = Math.max(
-      0,
-      ...sortedLayerEntries.map(([, ids]) => layerHeightOfReals(ids)),
-    );
+    const maxLayerHeight = useBk
+      ? maxBkExtent(
+          sortedLayerEntries,
+          bkPos as Map<string, number>,
+          augmented.dummyIds,
+          heights,
+          nodeHeight,
+        )
+      : Math.max(0, ...sortedLayerEntries.map(([, ids]) => layerHeightOfReals(ids)));
     const globalCenterY = padding + maxLayerHeight / 2;
 
     let cursorX = padding;
     for (const [layerIdx, ids] of sortedLayerEntries) {
       const realIds = ids.filter((id) => !augmented.dummyIds.has(id));
-      const layerHeight = layerHeightOfReals(ids);
       const layerWidth =
         realIds.length > 0
           ? Math.max(...realIds.map((id) => widths.get(id) ?? minNodeWidth))
           : minNodeWidth;
-      let cursorY = globalCenterY - layerHeight / 2;
-      for (const id of realIds) {
-        const n = nodeMeta.get(id);
-        if (!n) continue;
-        const w = widths.get(id) ?? minNodeWidth;
-        const h = heights.get(id) ?? nodeHeight;
-        positioned.set(id, makePositioned(n, cursorX + (layerWidth - w) / 2, cursorY, w, h));
-        cursorY += h + withinLayerSpacing;
+
+      if (useBk && bkPos !== null) {
+        for (const id of realIds) {
+          const n = nodeMeta.get(id);
+          if (!n) continue;
+          const w = widths.get(id) ?? minNodeWidth;
+          const h = heights.get(id) ?? nodeHeight;
+          const yPos = padding + (bkPos.get(id) ?? 0);
+          positioned.set(id, makePositioned(n, cursorX + (layerWidth - w) / 2, yPos, w, h));
+        }
+      } else {
+        const layerHeight = layerHeightOfReals(ids);
+        let cursorY = globalCenterY - layerHeight / 2;
+        for (const id of realIds) {
+          const n = nodeMeta.get(id);
+          if (!n) continue;
+          const w = widths.get(id) ?? minNodeWidth;
+          const h = heights.get(id) ?? nodeHeight;
+          positioned.set(id, makePositioned(n, cursorX + (layerWidth - w) / 2, cursorY, w, h));
+          cursorY += h + withinLayerSpacing;
+        }
       }
       layerBands.set(layerIdx, { start: cursorX, span: layerWidth });
       cursorX += layerWidth + layerSpacing;
     }
   }
 
-  positionDummies(
-    sortedLayerEntries,
-    augmented.dummyIds,
-    positioned,
-    layerBands,
-    direction,
-    withinLayerSpacing,
-  );
+  if (useBk && bkPos !== null) {
+    positionDummiesBk(
+      sortedLayerEntries,
+      augmented.dummyIds,
+      positioned,
+      layerBands,
+      direction,
+      bkPos,
+      padding,
+    );
+  } else {
+    positionDummies(
+      sortedLayerEntries,
+      augmented.dummyIds,
+      positioned,
+      layerBands,
+      direction,
+      withinLayerSpacing,
+    );
+  }
 
   // Multi-edge fan-out: count parallels per (from,to) pair.
   const parallelCount = new Map<string, number>();
@@ -841,4 +914,130 @@ function computeBounds(
     maxX: maxX + padding,
     maxY: maxY + padding,
   };
+}
+
+interface AugmentedShape {
+  dummyIds: Set<string>;
+  segmentEdges: Array<{ from: string; to: string }>;
+}
+
+/**
+ * Run the 4-pass Brandes-Köpf coordinate-assignment pipeline (conflicts →
+ * align ×4 → compact ×4 → balance) and return per-vertex cross-axis
+ * positions normalized so min = 0.
+ *
+ * For TB direction the cross-axis is X (vertex widths drive δ); for LR it
+ * is Y (vertex heights drive δ). δ is uniform per pipeline run, set to
+ * `max(crossAxisSize) + withinLayerSpacing` — conservative but safe.
+ * Per-edge δ tuned by adjacent node sizes is a future improvement.
+ */
+function computeBrandesKopfPositions(
+  sortedLayerEntries: ReadonlyArray<readonly [number, ReadonlyArray<string>]>,
+  augmented: AugmentedShape,
+  widths: ReadonlyMap<string, number>,
+  heights: ReadonlyMap<string, number>,
+  direction: 'TB' | 'LR',
+  withinLayerSpacing: number,
+  minNodeWidth: number,
+  nodeHeight: number,
+): Map<string, number> {
+  const layeredIds: string[][] = sortedLayerEntries.map(([, ids]) => [...ids]);
+  const { marks } = markType1Conflicts({
+    layers: layeredIds,
+    dummyIds: augmented.dummyIds,
+    segmentEdges: augmented.segmentEdges,
+  });
+
+  // Cross-axis δ: max real-node cross-axis size + within-layer spacing.
+  const crossSize = (id: string): number => {
+    if (augmented.dummyIds.has(id)) return 0;
+    return direction === 'TB' ? (widths.get(id) ?? minNodeWidth) : (heights.get(id) ?? nodeHeight);
+  };
+  let maxCross = direction === 'TB' ? minNodeWidth : nodeHeight;
+  for (const layer of layeredIds) {
+    for (const id of layer) {
+      const s = crossSize(id);
+      if (s > maxCross) maxCross = s;
+    }
+  }
+  const delta = maxCross + withinLayerSpacing;
+
+  const passes: Record<Pass, ReadonlyMap<string, number>> = {
+    tl: new Map(),
+    tr: new Map(),
+    bl: new Map(),
+    br: new Map(),
+  };
+  for (const pass of ['tl', 'tr', 'bl', 'br'] as const) {
+    const { root, align } = verticalAlign(
+      { layers: layeredIds, segmentEdges: augmented.segmentEdges, type1Conflicts: marks },
+      pass,
+    );
+    const { x } = horizontalCompact({
+      layers: layeredIds,
+      root,
+      align,
+      pass,
+      separation: delta,
+    });
+    passes[pass] = x;
+  }
+  const { x: balanced } = balance({ passes });
+
+  // Normalize: subtract min so positions start at 0.
+  let minVal = Number.POSITIVE_INFINITY;
+  for (const v of balanced.values()) {
+    if (v < minVal) minVal = v;
+  }
+  if (!Number.isFinite(minVal)) minVal = 0;
+
+  const out = new Map<string, number>();
+  for (const [id, v] of balanced) out.set(id, v - minVal);
+  return out;
+}
+
+function maxBkExtent(
+  sortedLayerEntries: ReadonlyArray<readonly [number, ReadonlyArray<string>]>,
+  bkPos: ReadonlyMap<string, number>,
+  dummyIds: ReadonlySet<string>,
+  sizes: ReadonlyMap<string, number>,
+  defaultSize: number,
+): number {
+  let mx = 0;
+  for (const [, ids] of sortedLayerEntries) {
+    for (const id of ids) {
+      if (dummyIds.has(id)) continue;
+      const x = bkPos.get(id) ?? 0;
+      const w = sizes.get(id) ?? defaultSize;
+      if (x + w > mx) mx = x + w;
+    }
+  }
+  return mx;
+}
+
+function positionDummiesBk(
+  sortedLayerEntries: ReadonlyArray<readonly [number, ReadonlyArray<string>]>,
+  dummyIds: ReadonlySet<string>,
+  positioned: Map<string, PositionedDAGNode>,
+  layerBands: ReadonlyMap<number, { start: number; span: number }>,
+  direction: 'TB' | 'LR',
+  bkPos: ReadonlyMap<string, number>,
+  padding: number,
+): void {
+  for (const [layerIdx, ids] of sortedLayerEntries) {
+    const band = layerBands.get(layerIdx) ?? { start: 0, span: 0 };
+    for (const id of ids) {
+      if (!dummyIds.has(id)) continue;
+      const cross = padding + (bkPos.get(id) ?? 0);
+      positioned.set(id, {
+        id,
+        label: '',
+        shape: 'rect',
+        x: direction === 'TB' ? cross : band.start,
+        y: direction === 'TB' ? band.start : cross,
+        width: direction === 'TB' ? 0 : band.span,
+        height: direction === 'TB' ? band.span : 0,
+      });
+    }
+  }
 }

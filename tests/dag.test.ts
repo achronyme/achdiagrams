@@ -166,4 +166,84 @@ describe('dag builder + render', () => {
         .build(),
     ).toThrow(DiagramBuildError);
   });
+
+  describe('coordinateAssignment: brandes-kopf (opt-in)', () => {
+    it('renders a chain with the brandes-kopf flag without crashing', () => {
+      const out = dag()
+        .node('a')
+        .node('b')
+        .node('c')
+        .edge('a', 'b')
+        .edge('b', 'c')
+        .layout({ coordinateAssignment: 'brandes-kopf' })
+        .render();
+      expect(out.svg).toMatch(/^<svg /);
+      expect(out.layoutMetrics.nodeCount).toBe(3);
+      expect(out.layoutMetrics.edgeCount).toBe(2);
+    });
+
+    it('renders a long edge through dummies with brandes-kopf', () => {
+      // 4-layer chain — internally inserts 2 dummies for the long
+      // edge a→z when span > 1. B-K should produce a clean column.
+      const out = dag()
+        .node('a')
+        .node('b')
+        .node('c')
+        .node('z')
+        .edge('a', 'b')
+        .edge('b', 'c')
+        .edge('c', 'z')
+        .edge('a', 'z') // long edge spanning 3 layers
+        .layout({ coordinateAssignment: 'brandes-kopf' })
+        .render();
+      expect(out.svg).toMatch(/^<svg /);
+      expect(out.layoutMetrics.edgeCount).toBe(4);
+    });
+
+    it('renders a diamond with brandes-kopf', () => {
+      const out = dag()
+        .node('a')
+        .node('b')
+        .node('c')
+        .node('d')
+        .edge('a', 'b')
+        .edge('a', 'c')
+        .edge('b', 'd')
+        .edge('c', 'd')
+        .layout({ coordinateAssignment: 'brandes-kopf' })
+        .render();
+      expect(out.svg).toMatch(/^<svg /);
+      expect(out.layoutMetrics.nodeCount).toBe(4);
+      expect(out.layoutMetrics.edgeCount).toBe(4);
+    });
+
+    it('produces different layout from lerp on the same input (asymmetric)', () => {
+      // Asymmetric input where B-K's per-vertex placement should differ
+      // from lerp's equal-spacing-per-layer.
+      const lerpOut = dag()
+        .node('a')
+        .node('b')
+        .node('c')
+        .node('d')
+        .edge('a', 'b')
+        .edge('a', 'c')
+        .edge('b', 'd') // c has no L2 child
+        .render(); // default 'lerp'
+      const bkOut = dag()
+        .node('a')
+        .node('b')
+        .node('c')
+        .node('d')
+        .edge('a', 'b')
+        .edge('a', 'c')
+        .edge('b', 'd')
+        .layout({ coordinateAssignment: 'brandes-kopf' })
+        .render();
+      // Bounds should differ because B-K's δ is computed differently
+      // than lerp's withinLayerSpacing-driven placement. Either width
+      // or content positioning will diverge — we just lock that the
+      // two paths produce non-identical output.
+      expect(bkOut.svg).not.toBe(lerpOut.svg);
+    });
+  });
 });

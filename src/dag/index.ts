@@ -15,7 +15,7 @@ import type {
   RenderOutput,
 } from '../types.js';
 import { DiagramBuildError } from '../types.js';
-import { type DAGLayoutOptions, layoutDAG } from './layout.js';
+import { type CoordinateAssignment, type DAGLayoutOptions, layoutDAG } from './layout.js';
 import { renderDAGSvg } from './render.js';
 
 export interface DAGNodeConfig {
@@ -41,7 +41,13 @@ export interface DAGLayoutConfig {
   layerSpacing?: number;
   withinLayerSpacing?: number;
   padding?: number;
+  /** Coordinate-assignment strategy. Defaults to `'lerp'`. Set to
+   *  `'brandes-kopf'` to use the 4-pass aligned algorithm — recommended
+   *  for dense or long-edge-heavy graphs (inspector-scale, SHA-256 IR). */
+  coordinateAssignment?: CoordinateAssignment;
 }
+
+export type { CoordinateAssignment };
 
 export interface DAGBuilder<Nodes extends string = never, Built extends boolean = false> {
   node<N extends string>(id: N, config?: DAGNodeConfig): DAGBuilder<Nodes | N, false>;
