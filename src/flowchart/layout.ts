@@ -179,15 +179,24 @@ export function layoutFlowchart(
       throw new Error(`Internal: edge references unknown node ${e.from} -> ${e.to}`);
     }
     // Only true back-edges (DFS-reversed) detour through a side-loop. Long
-    // forward edges keep direct anchors — the cubic spline already handles
-    // the curve smoothly without the C-shaped detour, which previously
-    // ballooned the bbox vertically when long edges spanned 2+ layers.
+    // forward edges keep direct anchors but receive a perpendicular bend
+    // proportional to span so the curve clears intermediate-layer nodes
+    // instead of slicing through them. The proper fix is dummy-node
+    // insertion (Sugiyama §4) — this is the cheap intermediate.
     const routing: EdgeRouting = wasReversed ? 'side-loop' : 'direct';
+    const span = Math.abs((layers.get(e.to) ?? 0) - (layers.get(e.from) ?? 0));
     const { fromAnchor, toAnchor } = resolveAnchors(f, t, direction, routing);
     const fromPoint = anchorPoint(f, fromAnchor);
     const toPoint = anchorPoint(t, toAnchor);
     const tip = insetPoint(toPoint, toAnchor);
-    const { c1, c2 } = computeControlPoints(fromPoint, tip, fromAnchor, toAnchor, routing);
+    const { c1, c2 } = computeControlPoints(
+      fromPoint,
+      tip,
+      fromAnchor,
+      toAnchor,
+      routing,
+      routing === 'direct' && span > 1 ? span : 0,
+    );
     return {
       from: e.from,
       to: e.to,
@@ -228,17 +237,39 @@ function computeControlPoints(
   fromSide: 'top' | 'right' | 'bottom' | 'left',
   toSide: 'top' | 'right' | 'bottom' | 'left',
   routing: EdgeRouting,
+  longSpan = 0,
 ): { c1: { x: number; y: number }; c2: { x: number; y: number } } {
   if (routing === 'side-loop') {
     return computeSideLoopControlPoints(from, to, fromSide, toSide);
   }
   const verticalFlow = fromSide === 'bottom' || fromSide === 'top';
+  // Perpendicular bend for long forward edges. Empirically, B(0.5) shifts by
+  // 0.75 × control-point offset, so 30 px per spanned layer keeps the curve
+  // ~22 px outside the layout midline per layer — enough to clear typical
+  // node heights (56-74 px) while staying visually subtle.
+  const bend = longSpan > 1 ? 30 * (longSpan - 1) : 0;
   if (verticalFlow) {
     const midY = from.y + (to.y - from.y) / 2;
-    return { c1: { x: from.x, y: midY }, c2: { x: to.x, y: midY } };
+    if (bend === 0) {
+      return { c1: { x: from.x, y: midY }, c2: { x: to.x, y: midY } };
+    }
+    // TB: bend horizontally toward the source's side of the layout midline.
+    const direction = from.x >= to.x ? 1 : -1;
+    return {
+      c1: { x: from.x + bend * direction, y: midY },
+      c2: { x: to.x + bend * direction, y: midY },
+    };
   }
   const midX = from.x + (to.x - from.x) / 2;
-  return { c1: { x: midX, y: from.y }, c2: { x: midX, y: to.y } };
+  if (bend === 0) {
+    return { c1: { x: midX, y: from.y }, c2: { x: midX, y: to.y } };
+  }
+  // LR: bend vertically toward the source's side of the layout midline.
+  const direction = from.y >= to.y ? 1 : -1;
+  return {
+    c1: { x: midX, y: from.y + bend * direction },
+    c2: { x: midX, y: to.y + bend * direction },
+  };
 }
 
 /**
