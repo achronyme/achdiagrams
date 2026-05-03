@@ -217,6 +217,56 @@ describe('dag builder + render', () => {
       expect(out.layoutMetrics.edgeCount).toBe(4);
     });
 
+    it('B-K diamond places mirror-symmetric b and c at the SAME x (parsed SVG)', () => {
+      // Hand-traced expectation: for a 4-node diamond with explicit
+      // 80×40 nodes, padding=0, withinLayerSpacing=16, B-K computes
+      // δ = max(width=80) + 16 = 96. Per the balance tests, the diamond
+      // collapses to: a, d at x_relative=0; b, c at x_relative=δ/2=48.
+      // After normalize-min and add padding=0, layout positions are
+      // a, d at x=0 and b, c at x=48.
+      const out = dag()
+        .node('a', { width: 80, height: 40 })
+        .node('b', { width: 80, height: 40 })
+        .node('c', { width: 80, height: 40 })
+        .node('d', { width: 80, height: 40 })
+        .edge('a', 'b')
+        .edge('a', 'c')
+        .edge('b', 'd')
+        .edge('c', 'd')
+        .layout({ coordinateAssignment: 'brandes-kopf', padding: 0, withinLayerSpacing: 16 })
+        .render({ accessible: false });
+
+      // Pull every node-rect's x position out of the SVG. The shape
+      // renders a single <rect ...> inside each <g class="ach-diag-node">.
+      // Note the leading space before `x="` — without it the regex would
+      // match the `rx="..."` corner-radius attribute as a suffix.
+      const nodeRectRegex =
+        /<g class="ach-diag-node"[^>]*><rect [^>]*? x="([\d.-]+)" y="([\d.-]+)"/g;
+      const matches: Array<{ x: number; y: number }> = [];
+      let m: RegExpExecArray | null;
+      // biome-ignore lint/suspicious/noAssignInExpressions: idiomatic regex iteration
+      while ((m = nodeRectRegex.exec(out.svg)) !== null) {
+        matches.push({ x: Number.parseFloat(m[1] ?? '0'), y: Number.parseFloat(m[2] ?? '0') });
+      }
+      expect(matches).toHaveLength(4);
+
+      // Sort by y to get layer order: [a (y_min), b, c, d (y_max)].
+      matches.sort((p, q) => p.y - q.y);
+      const aPos = matches[0];
+      const middle1 = matches[1];
+      const middle2 = matches[2];
+      const dPos = matches[3];
+      if (!aPos || !middle1 || !middle2 || !dPos) {
+        throw new Error('expected 4 nodes');
+      }
+      // a and d on the same x-axis (single column).
+      expect(aPos.x).toBe(dPos.x);
+      // b and c on the same x (mirror-collapse property of B-K).
+      expect(middle1.x).toBe(middle2.x);
+      // b/c are exactly δ/2 = 48 apart from a/d in the cross-axis.
+      expect(Math.abs(middle1.x - aPos.x)).toBe(48);
+    });
+
     it('produces different layout from lerp on the same input (asymmetric)', () => {
       // Asymmetric input where B-K's per-vertex placement should differ
       // from lerp's equal-spacing-per-layer.
