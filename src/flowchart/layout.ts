@@ -178,8 +178,11 @@ export function layoutFlowchart(
     if (!f || !t) {
       throw new Error(`Internal: edge references unknown node ${e.from} -> ${e.to}`);
     }
-    const span = Math.abs((layers.get(e.to) ?? 0) - (layers.get(e.from) ?? 0));
-    const routing: EdgeRouting = wasReversed || span > 1 ? 'side-loop' : 'direct';
+    // Only true back-edges (DFS-reversed) detour through a side-loop. Long
+    // forward edges keep direct anchors — the cubic spline already handles
+    // the curve smoothly without the C-shaped detour, which previously
+    // ballooned the bbox vertically when long edges spanned 2+ layers.
+    const routing: EdgeRouting = wasReversed ? 'side-loop' : 'direct';
     const { fromAnchor, toAnchor } = resolveAnchors(f, t, direction, routing);
     const fromPoint = anchorPoint(f, fromAnchor);
     const toPoint = anchorPoint(t, toAnchor);
@@ -368,8 +371,8 @@ function assignLayers(ir: FlowchartDiagram, reversed: Set<number>): Map<string, 
  * returns for typical 1-2 dozen-layer graphs).
  *
  * Only direct (1-layer-span) edges contribute to the barycenter calculation;
- * back-edges and long edges are routed via side-loops and don't influence
- * within-layer ordering.
+ * back-edges (and any future long-edge dummy nodes) are routed separately
+ * and don't influence within-layer ordering.
  */
 function reduceCrossings(
   byLayer: Map<number, string[]>,
